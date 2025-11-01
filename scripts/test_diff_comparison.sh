@@ -75,17 +75,28 @@ generate_example_files() {
     # Create example directory
     mkdir -p "$EXAMPLE_DIR"
     
-    # Get top N most revised files from git history up to BASE_REF
-    # Note: --follow only works with single files, so we get the list first,
-    # then count revisions with --follow for each file individually
-    local files=($(git -C "$REPO_ROOT" log "$BASE_REF" --pretty=format: --name-only | \
-        grep -v '^$' | sort | uniq -c | sort -rn | head -$num_files | awk '{print $2}'))
+    # Get all files that exist in BASE_REF
+    echo "Counting revisions for files in $BASE_REF (this may take a moment)..."
     
+    # Create temporary file to store file:revision pairs
+    local temp_file=$(mktemp)
+    
+    git -C "$REPO_ROOT" ls-tree -r --name-only "$BASE_REF" | while read file; do
+        local revisions=$(git -C "$REPO_ROOT" log "$BASE_REF" --follow --oneline -- "$file" 2>/dev/null | wc -l)
+        if [ $revisions -gt 0 ]; then
+            echo "$revisions $file" >> "$temp_file"
+        fi
+    done
+    
+    # Sort by revision count and take top N
+    local files=($(sort -rn "$temp_file" | head -$num_files | awk '{print $2}'))
+    rm -f "$temp_file"
+    
+    echo ""
     echo "Top $num_files most revised files (as of $BASE_REF, with rename tracking):"
     for i in "${!files[@]}"; do
         local file="${files[$i]}"
-        # Use --follow to track renames when counting revisions (works per-file)
-        local revisions=$(git -C "$REPO_ROOT" log "$BASE_REF" --follow --oneline -- "$file" | wc -l)
+        local revisions=$(git -C "$REPO_ROOT" log "$BASE_REF" --follow --oneline -- "$file" 2>/dev/null | wc -l)
         echo "  $((i+1)). $file ($revisions revisions)"
     done
     echo ""
@@ -102,11 +113,43 @@ generate_example_files() {
         
         local basename=$(basename "$file")
         
-        # Get all commits that modified this file up to BASE_REF (chronological order)
-        # Use --follow to track file renames
-        local commits=($(git -C "$REPO_ROOT" log "$BASE_REF" --reverse --follow --pretty=format:%H -- "$file"))
+        # Get all commits that modified this file up to BASE_REF
+        # Note: --reverse doesn't work with --follow, so we get them in reverse-chronological order
+        # and then reverse the array
+        local commits_reverse=($(git -C "$REPO_ROOT" log "$BASE_REF" --follow --format=%H -- "$file"))
+        
+        # Reverse the array to get chronological order
+        local commits=()
+        for ((i=${#commits_reverse[@]}-1; i>=0; i--)); do
+            commits+=("${commits_reverse[i]}")
+        done
         
         echo "  Found ${#commits[@]} commits (saving in chronological order)"
+        
+        # Build a map of commit -> filepath by walking through rename history
+        # Start with the current filename and walk backwards through renames
+        declare -A commit_paths
+        local current_path="$file"
+        
+        # Get all renames in chronological order
+        local rename_info=$(git -C "$REPO_ROOT" log "$BASE_REF" --follow --format='%H' --name-status --diff-filter=R -- "$file")
+        
+        # Parse rename information to build a timeline
+        local last_commit=""
+        while IFS= read -r line; do
+            if [[ $line =~ ^[0-9a-f]{40}$ ]]; then
+                last_commit="$line"
+            elif [[ $line =~ ^R[0-9]*[[:space:]]+(.*)[[:space:]]+(.*)\$ ]]; then
+                # Format: R100 old_path new_path
+                local old_path=$(echo "$line" | awk '{print $2}')
+                local new_path=$(echo "$line" | awk '{print $3}')
+                # At this commit, file was renamed from old_path to new_path
+                # So commits before this used old_path, commits after use new_path
+                if [ -n "$last_commit" ]; then
+                    echo "DEBUG: Rename at $last_commit: $old_path -> $new_path" >&2
+                fi
+            fi
+        done <<< "$rename_info"
         
         # Save each version with sequence number and commit hash for ordering
         local count=0
@@ -116,13 +159,25 @@ generate_example_files() {
             local seq=$(printf "%03d" $idx)
             local output_file="$EXAMPLE_DIR/${basename}_${seq}_${commit}"
             
-            # Extract file content at this commit
-            git -C "$REPO_ROOT" show "$commit:$file" > "$output_file" 2>/dev/null
-            
-            if [ $? -eq 0 ]; then
+            # Try to extract with current filename first
+            if git -C "$REPO_ROOT" show "$commit:$file" > "$output_file" 2>/dev/null; then
                 count=$((count + 1))
             else
-                rm -f "$output_file"
+                # If that fails, try to find the file by basename in the commit
+                local found=false
+                while IFS= read -r potential_path; do
+                    if [[ "$(basename "$potential_path")" == "$basename" ]]; then
+                        if git -C "$REPO_ROOT" show "$commit:$potential_path" > "$output_file" 2>/dev/null; then
+                            count=$((count + 1))
+                            found=true
+                            break
+                        fi
+                    fi
+                done < <(git -C "$REPO_ROOT" ls-tree -r --name-only "$commit")
+                
+                if [ "$found" = false ]; then
+                    rm -f "$output_file"
+                fi
             fi
         done
         
