@@ -3,4 +3,6 @@ CompileFlags:
     - -Ilibvscode-diff/include
     - -Ilibvscode-diff/vendor
     - -DUTF8PROC_STATIC
+    - -DUSE_OPENMP
+    - -fopenmp
   CompilationDatabase: build
