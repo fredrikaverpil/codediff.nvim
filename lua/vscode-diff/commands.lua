@@ -51,7 +51,11 @@ local function handle_git_diff(revision)
           -- Read fresh buffer content right before creating diff view
           local lines_current = vim.api.nvim_buf_get_lines(0, 0, -1, false)
 
-          local lines_diff = diff.compute_diff(lines_git, lines_current)
+          local config = require("vscode-diff.config")
+          local diff_options = {
+            max_computation_time_ms = config.options.diff.max_computation_time_ms,
+          }
+          local lines_diff = diff.compute_diff(lines_git, lines_current, diff_options)
           if not lines_diff then
             vim.notify("Failed to compute diff", vim.log.levels.ERROR)
             return
@@ -80,7 +84,11 @@ local function handle_file_diff(file_a, file_b)
   local lines_a = vim.fn.readfile(file_a)
   local lines_b = vim.fn.readfile(file_b)
 
-  local lines_diff = diff.compute_diff(lines_a, lines_b)
+  local config = require("vscode-diff.config")
+  local diff_options = {
+    max_computation_time_ms = config.options.diff.max_computation_time_ms,
+  }
+  local lines_diff = diff.compute_diff(lines_a, lines_b, diff_options)
   if not lines_diff then
     vim.notify("Failed to compute diff", vim.log.levels.ERROR)
     return

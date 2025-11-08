@@ -60,7 +60,11 @@ local function do_diff_update(bufnr)
     end
 
     -- Compute diff
-    local lines_diff = diff.compute_diff(left_lines, right_lines)
+    local config = require("vscode-diff.config")
+    local diff_options = {
+      max_computation_time_ms = config.options.diff.max_computation_time_ms,
+    }
+    local lines_diff = diff.compute_diff(left_lines, right_lines, diff_options)
     if not lines_diff then
       return
     end

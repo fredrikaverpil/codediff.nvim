@@ -27,6 +27,7 @@
 typedef struct {
   bool consider_whitespace_changes; // If false, trim whitespace
   bool extend_to_subwords;          // If true, extend to CamelCase subwords
+  int timeout_ms;                   // Timeout in milliseconds (0 = infinite)
 } CharLevelOptions;
 
 /**

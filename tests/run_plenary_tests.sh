@@ -26,6 +26,7 @@ FAILED=0
 # Test files
 SPEC_FILES=(
   "tests/ffi_integration_spec.lua"
+  "tests/timeout_spec.lua"
   "tests/git_integration_spec.lua"
   "tests/autoscroll_spec.lua"
   "tests/render/semantic_tokens_spec.lua"

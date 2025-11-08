@@ -201,9 +201,13 @@ int main(int argc, char* argv[]) {
     printf("=================================================================\n\n");
     
     // Set up diff options (matching Lua FFI defaults)
+    // Allow timeout override via environment variable for testing
+    const char* timeout_env = getenv("VSCODE_DIFF_TIMEOUT");
+    int timeout_ms = timeout_env ? atoi(timeout_env) : 5000;
+    
     DiffOptions options = {
         .ignore_trim_whitespace = false,
-        .max_computation_time_ms = 5000,  // 5 second timeout (same as Lua FFI)
+        .max_computation_time_ms = timeout_ms,
         .compute_moves = false,
         .extend_to_subwords = false
     };

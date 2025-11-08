@@ -15,6 +15,7 @@ M.defaults = {
   -- Diff view behavior
   diff = {
     disable_inlay_hints = true,  -- Disable inlay hints in diff windows for cleaner view
+    max_computation_time_ms = 5000,  -- Maximum time for diff computation (5 seconds, VSCode default)
   },
 
   -- Buffer options

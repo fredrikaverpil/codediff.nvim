@@ -835,10 +835,10 @@ RangeMappingArray *refine_diff_char_level(const SequenceDiff *line_diff, const c
 
   if (len1 + len2 < 500) {
     // Use DP algorithm for small character sequences
-    diffs = myers_dp_diff_algorithm(seq1_iface, seq2_iface, 0, &hit_timeout, NULL, NULL);
+    diffs = myers_dp_diff_algorithm(seq1_iface, seq2_iface, options->timeout_ms, &hit_timeout, NULL, NULL);
   } else {
     // Use O(ND) algorithm for large character sequences
-    diffs = myers_nd_diff_algorithm(seq1_iface, seq2_iface, 0, &hit_timeout);
+    diffs = myers_nd_diff_algorithm(seq1_iface, seq2_iface, options->timeout_ms, &hit_timeout);
   }
 
   if (!diffs) {

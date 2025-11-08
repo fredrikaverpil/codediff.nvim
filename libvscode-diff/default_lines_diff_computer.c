@@ -194,12 +194,11 @@ static RangeMappingArray* refine_diff(
     const DiffOptions* options,
     bool* hit_timeout
 ) {
-    (void)timeout;  // timeout handled inside refine_diff_char_level
-    
     // Call our existing refine_diff_char_level function
     CharLevelOptions char_opts;
     char_opts.consider_whitespace_changes = consider_whitespace_changes;
     char_opts.extend_to_subwords = options->extend_to_subwords;
+    char_opts.timeout_ms = timeout->timeout_ms;
     
     bool local_timeout = false;
     RangeMappingArray* result = refine_diff_char_level(
