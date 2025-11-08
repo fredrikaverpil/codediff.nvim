@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.15)
 
+# Set policies to suppress warnings
+if(POLICY CMP0177)
+    cmake_policy(SET CMP0177 NEW) # install() DESTINATION paths are normalized
+endif()
+
 # Read version from VERSION file (single source of truth)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../VERSION" PROJECT_VERSION)
 string(STRIP "${PROJECT_VERSION}" PROJECT_VERSION)
@@ -151,21 +156,21 @@ install(TARGETS vscode_diff
 )
 
 # Custom install target that copies immediately
-# Try to copy, but don't fail if file is locked (nvim running)
+# Use copy_if_different to avoid unnecessary timestamp updates
 if(WIN32)
     # Windows: Copy with error suppression if file is locked
     add_custom_command(TARGET vscode_diff POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E echo "Installing library to plugin root..."
-        COMMAND ${CMAKE_COMMAND} -E copy
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:vscode_diff>
             ${INSTALL_DIR}/libvscode_diff$<TARGET_FILE_SUFFIX:vscode_diff>
             || (exit 0)
-        COMMENT "Installing library (may fail if nvim is running - restart nvim to use new version)"
+        COMMENT "Installing library (skips if unchanged or locked)"
     )
 else()
-    # Unix: Normal copy (no locking issues)
+    # Unix: Use copy_if_different (no locking issues)
     add_custom_command(TARGET vscode_diff POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:vscode_diff>
             ${INSTALL_DIR}/libvscode_diff$<TARGET_FILE_SUFFIX:vscode_diff>
         COMMENT "Installing library to plugin root"
@@ -198,9 +203,18 @@ if(USE_BUNDLED_UTF8PROC)
 endif()
 
 # Helper function to add tests
+# Note: Tests compile sources directly because they test internal functions
+# not exported in the DLL. This causes duplicate compilation but ensures
+# thorough testing of internal APIs.
 function(add_diff_test test_name)
     add_executable(${test_name} tests/${test_name}.c ${TEST_COMMON_SOURCES})
     target_include_directories(${test_name} PRIVATE include)
+    
+    # Define BUILDING_DLL for tests to avoid DLL linkage warnings
+    # Tests compile sources directly, treating them as if building a library
+    if(WIN32)
+        target_compile_definitions(${test_name} PRIVATE BUILDING_DLL)
+    endif()
     
     if(USE_BUNDLED_UTF8PROC)
         target_include_directories(${test_name} PRIVATE ${UTF8PROC_INCLUDE})
@@ -274,6 +288,12 @@ endif()
 add_executable(diff diff_tool.c ${DIFF_CORE_SOURCES})
 target_include_directories(diff PRIVATE include)
 
+# Define BUILDING_DLL for diff CLI to avoid DLL linkage warnings
+# CLI compiles sources directly, treating them as if building a library
+if(WIN32)
+    target_compile_definitions(diff PRIVATE BUILDING_DLL)
+endif()
+
 if(USE_BUNDLED_UTF8PROC)
     target_include_directories(diff PRIVATE ${UTF8PROC_INCLUDE})
     target_compile_definitions(diff PRIVATE UTF8PROC_STATIC)
@@ -296,10 +316,9 @@ if(USE_OPENMP)
 endif()
 
 # Copy diff tool to plugin root for easy access (similar to library)
-# Delete first to ensure fresh copy (forces rebuild if user deleted it)
+# Use copy_if_different to avoid unnecessary timestamp updates
 add_custom_command(TARGET diff POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E remove -f ${INSTALL_DIR}/$<TARGET_FILE_NAME:diff>
-    COMMAND ${CMAKE_COMMAND} -E copy
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:diff>
         ${INSTALL_DIR}/$<TARGET_FILE_NAME:diff>
     COMMENT "Installing diff CLI tool to plugin root"

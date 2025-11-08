@@ -1,4 +1,4 @@
-LIBRARY libvscode_diff
+LIBRARY vscode_diff
 EXPORTS
     compute_diff
     free_lines_diff

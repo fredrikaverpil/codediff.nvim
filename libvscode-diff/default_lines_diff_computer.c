@@ -430,6 +430,10 @@ LinesDiff* compute_diff(
             
             // Parallel character refinement with dynamic scheduling
             // MSVC OpenMP 2.0 workaround: declare loop variable outside
+#ifdef _MSC_VER
+            #pragma warning(push)
+            #pragma warning(disable: 4101) // unreferenced local variable (false positive with OpenMP)
+#endif
             int diff_idx;
             #pragma omp parallel for schedule(dynamic, 1) shared(thread_results, thread_timeouts) private(diff_idx)
             for (diff_idx = 0; diff_idx < num_diffs; diff_idx++) {
@@ -499,6 +503,9 @@ LinesDiff* compute_diff(
                 if (ws_changes) range_mapping_array_free(ws_changes);
                 if (character_diffs) range_mapping_array_free(character_diffs);
             }
+#ifdef _MSC_VER
+            #pragma warning(pop)
+#endif
             
             // Check timeout flags
             for (int i = 0; i < num_diffs; i++) {

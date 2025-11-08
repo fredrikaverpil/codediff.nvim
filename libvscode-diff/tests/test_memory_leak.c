@@ -11,6 +11,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+// MSVC compatibility: Use _strdup on Windows
+#ifdef _MSC_VER
+#define strdup _strdup
+#endif
+
 #define TEST_ITERATIONS 100
 #define LARGE_FILE_SIZE 1000
 
