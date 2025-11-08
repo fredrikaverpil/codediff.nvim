@@ -19,6 +19,9 @@
 // Test Infrastructure
 // ============================================================================
 
+// Verbosity levels
+static int verbosity = 0; // 0=quiet, 1=normal, 2=verbose
+
 #define ASSERT(cond, msg)                                                                          \
   do {                                                                                             \
     if (!(cond)) {                                                                                 \
@@ -36,6 +39,8 @@
   } while (0)
 
 static void print_lines_diff(const LinesDiff *diff) {
+  if (verbosity < 2) return; // Only print in verbose mode
+  
   printf("\n");
   printf("  LinesDiff Result:\n");
   printf("    Changes: %d\n", diff->changes.count);
@@ -54,7 +59,7 @@ static void print_lines_diff(const LinesDiff *diff) {
 // ============================================================================
 
 bool test_empty_diff() {
-  printf("Running test_empty_diff...\n");
+  if (verbosity >= 1) printf("Running test_empty_diff...\n");
 
   const char *original[] = {"hello"};
   const char *modified[] = {"hello"};
@@ -75,12 +80,12 @@ bool test_empty_diff() {
 
   free_lines_diff(result);
 
-  printf("  ✓ PASSED\n");
+  if (verbosity >= 1) printf("  ✓ PASSED\n");
   return true;
 }
 
 bool test_simple_change() {
-  printf("Running test_simple_change...\n");
+  if (verbosity >= 1) printf("Running test_simple_change...\n");
 
   const char *original[] = {"hello world"};
   const char *modified[] = {"hello universe"};
@@ -102,12 +107,12 @@ bool test_simple_change() {
 
   free_lines_diff(result);
 
-  printf("  ✓ PASSED\n");
+  if (verbosity >= 1) printf("  ✓ PASSED\n");
   return true;
 }
 
 bool test_multiline_diff() {
-  printf("Running test_multiline_diff...\n");
+  if (verbosity >= 1) printf("Running test_multiline_diff...\n");
 
   const char *original[] = {"line 1", "line 2 to delete", "line 3"};
   const char *modified[] = {"line 1", "line 3", "line 4 added"};
@@ -125,12 +130,12 @@ bool test_multiline_diff() {
 
   free_lines_diff(result);
 
-  printf("  ✓ PASSED\n");
+  if (verbosity >= 1) printf("  ✓ PASSED\n");
   return true;
 }
 
 bool test_whitespace_changes() {
-  printf("Running test_whitespace_changes...\n");
+  if (verbosity >= 1) printf("Running test_whitespace_changes...\n");
 
   const char *original[] = {"hello", "world"};
   const char *modified[] = {"  hello  ", "world"};
@@ -150,12 +155,12 @@ bool test_whitespace_changes() {
 
   free_lines_diff(result);
 
-  printf("  ✓ PASSED\n");
+  if (verbosity >= 1) printf("  ✓ PASSED\n");
   return true;
 }
 
 bool test_ignore_whitespace() {
-  printf("Running test_ignore_whitespace...\n");
+  if (verbosity >= 1) printf("Running test_ignore_whitespace...\n");
 
   const char *original[] = {"hello", "world"};
   const char *modified[] = {"  hello  ", "world"};
@@ -175,7 +180,7 @@ bool test_ignore_whitespace() {
 
   free_lines_diff(result);
 
-  printf("  ✓ PASSED\n");
+  if (verbosity >= 1) printf("  ✓ PASSED\n");
   return true;
 }
 
@@ -183,12 +188,40 @@ bool test_ignore_whitespace() {
 // Test Runner
 // ============================================================================
 
-int main(void) {
-  printf("\n");
-  printf("═══════════════════════════════════════════════════════════\n");
-  printf("  compute_diff() Test Suite\n");
-  printf("═══════════════════════════════════════════════════════════\n");
-  printf("\n");
+int main(int argc, char *argv[]) {
+  // Parse options
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
+      verbosity = 2;
+    } else if (strcmp(argv[i], "-q") == 0 || strcmp(argv[i], "--quiet") == 0) {
+      verbosity = 0;
+    } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+      printf("Usage: %s [OPTIONS]\n", argv[0]);
+      printf("Options:\n");
+      printf("  -q, --quiet    Quiet mode: only show summary (tests/failures)\n");
+      printf("  (no options)   Normal mode: show test names and pass/fail\n");
+      printf("  -v, --verbose  Verbose mode: show detailed diff output\n");
+      printf("  -h, --help     Show this help message\n");
+      return 0;
+    } else {
+      fprintf(stderr, "Unknown option: %s\n", argv[i]);
+      fprintf(stderr, "Use -h or --help for usage information\n");
+      return 1;
+    }
+  }
+  
+  // Default verbosity if no options
+  if (argc == 1) {
+    verbosity = 1; // Normal mode
+  }
+
+  if (verbosity >= 1) {
+    printf("\n");
+    printf("═══════════════════════════════════════════════════════════\n");
+    printf("  compute_diff() Test Suite\n");
+    printf("═══════════════════════════════════════════════════════════\n");
+    printf("\n");
+  }
 
   int passed = 0;
   int total = 0;
@@ -198,7 +231,7 @@ int main(void) {
     total++;                                                                                       \
     if (test())                                                                                    \
       passed++;                                                                                    \
-    printf("\n");                                                                                  \
+    if (verbosity >= 1) printf("\n");                                                             \
   } while (0)
 
   RUN_TEST(test_empty_diff);
@@ -207,14 +240,20 @@ int main(void) {
   RUN_TEST(test_whitespace_changes);
   RUN_TEST(test_ignore_whitespace);
 
-  printf("═══════════════════════════════════════════════════════════\n");
-  if (passed == total) {
-    printf("  ✅ ALL TESTS PASSED (%d/%d)\n", passed, total);
+  // Always show summary
+  if (verbosity == 0) {
+    // Quiet mode: single line output for easy comparison
+    printf("%d %d\n", total, passed);
   } else {
-    printf("  ❌ SOME TESTS FAILED (%d/%d passed)\n", passed, total);
+    printf("═══════════════════════════════════════════════════════════\n");
+    if (passed == total) {
+      printf("  ✅ ALL TESTS PASSED (%d/%d)\n", passed, total);
+    } else {
+      printf("  ❌ SOME TESTS FAILED (%d/%d passed)\n", passed, total);
+    }
+    printf("═══════════════════════════════════════════════════════════\n");
+    printf("\n");
   }
-  printf("═══════════════════════════════════════════════════════════\n");
-  printf("\n");
 
   return (passed == total) ? 0 : 1;
 }
