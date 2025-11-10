@@ -39,14 +39,14 @@ local function save_buffer_state(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return nil
   end
-  
+
   local state = {}
-  
+
   -- Save inlay hint state (Neovim 0.10+)
   if vim.lsp.inlay_hint then
     state.inlay_hints_enabled = vim.lsp.inlay_hint.is_enabled({ bufnr = bufnr })
   end
-  
+
   return state
 end
 
@@ -55,7 +55,7 @@ local function restore_buffer_state(bufnr, state)
   if not vim.api.nvim_buf_is_valid(bufnr) or not state then
     return
   end
-  
+
   -- Restore inlay hint state
   if vim.lsp.inlay_hint and state.inlay_hints_enabled ~= nil then
     vim.lsp.inlay_hint.enable(state.inlay_hints_enabled, { bufnr = bufnr })
@@ -68,10 +68,15 @@ local function clear_buffer_highlights(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
-  
+
   -- Clear both highlight and filler namespaces
   vim.api.nvim_buf_clear_namespace(bufnr, highlights.ns_highlight, 0, -1)
   vim.api.nvim_buf_clear_namespace(bufnr, highlights.ns_filler, 0, -1)
+end
+
+--- Clear highlights from a buffer (public API for update function)
+function M.clear_highlights(bufnr)
+  clear_buffer_highlights(bufnr)
 end
 
 -- Get file modification time (mtime)
@@ -79,14 +84,14 @@ local function get_file_mtime(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return nil
   end
-  
+
   local bufname = vim.api.nvim_buf_get_name(bufnr)
-  
+
   -- Virtual buffers don't have mtime
   if bufname:match('^vscodediff://') or bufname == '' then
     return nil
   end
-  
+
   -- Get file stat
   local stat = vim.loop.fs_stat(bufname)
   return stat and stat.mtime.sec or nil
@@ -112,16 +117,16 @@ local function suspend_diff(tabpage)
   if not diff or diff.suspended then
     return
   end
-  
+
   -- Disable auto-refresh (stop watching buffer changes)
   local auto_refresh = require('vscode-diff.auto_refresh')
   auto_refresh.disable(diff.original_bufnr)
   auto_refresh.disable(diff.modified_bufnr)
-  
+
   -- Clear highlights from both buffers
   clear_buffer_highlights(diff.original_bufnr)
   clear_buffer_highlights(diff.modified_bufnr)
-  
+
   -- Mark as suspended
   diff.suspended = true
 end
@@ -133,49 +138,49 @@ local function resume_diff(tabpage)
   if not diff or not diff.suspended then
     return
   end
-  
+
   -- Check if buffers still exist
   if not vim.api.nvim_buf_is_valid(diff.original_bufnr) or not vim.api.nvim_buf_is_valid(diff.modified_bufnr) then
     active_diffs[tabpage] = nil
     return
   end
-  
+
   -- Check if buffer or file changed while suspended
   local original_tick_changed = vim.api.nvim_buf_get_changedtick(diff.original_bufnr) ~= diff.changedtick.original
   local modified_tick_changed = vim.api.nvim_buf_get_changedtick(diff.modified_bufnr) ~= diff.changedtick.modified
-  
+
   local original_mtime_changed = false
   local modified_mtime_changed = false
-  
+
   if diff.mtime.original then
     local current_mtime = get_file_mtime(diff.original_bufnr)
     original_mtime_changed = current_mtime ~= diff.mtime.original
   end
-  
+
   if diff.mtime.modified then
     local current_mtime = get_file_mtime(diff.modified_bufnr)
     modified_mtime_changed = current_mtime ~= diff.mtime.modified
   end
-  
+
   local need_recompute = original_tick_changed or modified_tick_changed or original_mtime_changed or modified_mtime_changed
-  
+
   -- Always get fresh buffer content for rendering
   local original_lines = vim.api.nvim_buf_get_lines(diff.original_bufnr, 0, -1, false)
   local modified_lines = vim.api.nvim_buf_get_lines(diff.modified_bufnr, 0, -1, false)
-  
+
   local lines_diff
   local diff_was_recomputed = false
-  
+
   if need_recompute or not diff.stored_diff_result then
     -- Buffer or file changed, recompute diff
     local diff_module = require('vscode-diff.diff')
-    lines_diff = diff_module.compute_diff(left_lines, right_lines)
+    lines_diff = diff_module.compute_diff(original_lines, modified_lines)
     diff_was_recomputed = true
-    
+
     if lines_diff then
       -- Store new diff result
       diff.stored_diff_result = lines_diff
-      
+
       -- Update changedtick and mtime
       diff.changedtick.original = vim.api.nvim_buf_get_changedtick(diff.original_bufnr)
       diff.changedtick.modified = vim.api.nvim_buf_get_changedtick(diff.modified_bufnr)
@@ -186,52 +191,52 @@ local function resume_diff(tabpage)
     -- Nothing changed, reuse stored diff result
     lines_diff = diff.stored_diff_result
   end
-  
+
   -- Render with fresh content and (possibly reused) diff result
   if lines_diff then
     local core = require('vscode-diff.render.core')
     core.render_diff(diff.original_bufnr, diff.modified_bufnr, original_lines, modified_lines, lines_diff)
-    
+
     -- Re-sync scrollbind ONLY if diff was recomputed (fillers may have changed)
     if diff_was_recomputed and vim.api.nvim_win_is_valid(diff.original_win) and vim.api.nvim_win_is_valid(diff.modified_win) then
       local current_win = vim.api.nvim_get_current_win()
-      
+
       if current_win == diff.original_win or current_win == diff.modified_win then
         -- Step 1: Remember cursor position after render
         local saved_line = vim.api.nvim_win_get_cursor(current_win)[1]
-        
+
         -- Step 2: Reset both to line 1 (baseline)
         vim.api.nvim_win_set_cursor(diff.original_win, {1, 0})
         vim.api.nvim_win_set_cursor(diff.modified_win, {1, 0})
-        
+
         -- Step 3: Re-establish scrollbind (reset sync state)
         vim.wo[diff.original_win].scrollbind = false
         vim.wo[diff.modified_win].scrollbind = false
         vim.wo[diff.original_win].scrollbind = true
         vim.wo[diff.modified_win].scrollbind = true
-        
+
         -- Step 4: Set both to saved line (like initial creation)
         pcall(vim.api.nvim_win_set_cursor, diff.original_win, {saved_line, 0})
         pcall(vim.api.nvim_win_set_cursor, diff.modified_win, {saved_line, 0})
       end
     end
   end
-  
+
   -- Re-enable auto-refresh for real buffers only
   local auto_refresh = require('vscode-diff.auto_refresh')
-  
+
   -- Check if buffers are real files (not virtual) using revision
   local original_is_real = not is_virtual_revision(diff.original_revision)
   local modified_is_real = not is_virtual_revision(diff.modified_revision)
-  
+
   if original_is_real then
     auto_refresh.enable(diff.original_bufnr)
   end
-  
+
   if modified_is_real then
     auto_refresh.enable(diff.modified_bufnr)
   end
-  
+
   -- Mark as active
   diff.suspended = false
 end
@@ -255,7 +260,7 @@ function M.create_session(tabpage, mode, git_root, original_path, modified_path,
     modified_path = modified_path,
     original_revision = original_revision,
     modified_revision = modified_revision,
-    
+
     -- These will be filled in by complete_session()
     original_bufnr = nil,
     modified_bufnr = nil,
@@ -263,7 +268,7 @@ function M.create_session(tabpage, mode, git_root, original_path, modified_path,
     modified_win = nil,
     original_state = nil,
     modified_state = nil,
-    
+
     -- Lifecycle state
     suspended = false,
     stored_diff_result = nil,
@@ -285,17 +290,17 @@ function M.complete_session(tabpage, original_bufnr, modified_bufnr, original_wi
   if not session then
     error("Session not found for tabpage " .. tabpage .. ". Call create_session() first.")
   end
-  
+
   -- Save buffer state
   session.original_state = save_buffer_state(original_bufnr)
   session.modified_state = save_buffer_state(modified_bufnr)
-  
+
   -- Fill in buffer/window info
   session.original_bufnr = original_bufnr
   session.modified_bufnr = modified_bufnr
   session.original_win = original_win
   session.modified_win = modified_win
-  
+
   -- Store diff result
   session.stored_diff_result = lines_diff
   session.changedtick = {
@@ -306,20 +311,20 @@ function M.complete_session(tabpage, original_bufnr, modified_bufnr, original_wi
     original = get_file_mtime(original_bufnr),
     modified = get_file_mtime(modified_bufnr),
   }
-  
+
   -- Mark windows with restore flag
   vim.w[original_win].vscode_diff_restore = 1
   vim.w[modified_win].vscode_diff_restore = 1
-  
+
   -- Apply inlay hint settings if configured
   if config.options.diff.disable_inlay_hints and vim.lsp.inlay_hint then
     vim.lsp.inlay_hint.enable(false, { bufnr = original_bufnr })
     vim.lsp.inlay_hint.enable(false, { bufnr = modified_bufnr })
   end
-  
+
   -- Setup tab autocmds
   local tab_augroup = vim.api.nvim_create_augroup('vscode_diff_lifecycle_tab_' .. tabpage, { clear = true })
-  
+
   vim.api.nvim_create_autocmd('TabLeave', {
     group = tab_augroup,
     callback = function()
@@ -329,7 +334,7 @@ function M.complete_session(tabpage, original_bufnr, modified_bufnr, original_wi
       end
     end,
   })
-  
+
   vim.api.nvim_create_autocmd('TabEnter', {
     group = tab_augroup,
     callback = function()
@@ -359,20 +364,20 @@ local function cleanup_diff(tabpage)
   -- Clear highlights from both buffers
   clear_buffer_highlights(diff.original_bufnr)
   clear_buffer_highlights(diff.modified_bufnr)
-  
+
   -- Restore buffer states
   restore_buffer_state(diff.original_bufnr, diff.original_state)
   restore_buffer_state(diff.modified_bufnr, diff.modified_state)
-  
+
   -- Send didClose notifications for virtual buffers
   -- Compute URIs on-demand since we don't store them anymore
   local original_virtual_uri = compute_virtual_uri(diff.git_root, diff.original_revision, diff.original_path)
   local modified_virtual_uri = compute_virtual_uri(diff.git_root, diff.modified_revision, diff.modified_path)
-  
+
   -- Get LSP clients from any valid buffer
   local ref_bufnr = vim.api.nvim_buf_is_valid(diff.original_bufnr) and diff.original_bufnr or diff.modified_bufnr
   local clients = vim.lsp.get_clients({ bufnr = ref_bufnr })
-  
+
   for _, client in ipairs(clients) do
     if client.server_capabilities.semanticTokensProvider then
       if original_virtual_uri then
@@ -387,20 +392,20 @@ local function cleanup_diff(tabpage)
       end
     end
   end
-  
+
   -- Delete virtual buffers if they're still valid
   if vim.api.nvim_buf_is_valid(diff.original_bufnr) then
     if is_virtual_revision(diff.original_revision) then
       pcall(vim.api.nvim_buf_delete, diff.original_bufnr, { force = true })
     end
   end
-  
+
   if vim.api.nvim_buf_is_valid(diff.modified_bufnr) then
     if is_virtual_revision(diff.modified_revision) then
       pcall(vim.api.nvim_buf_delete, diff.modified_bufnr, { force = true })
     end
   end
-  
+
   -- Clear window variables if windows still exist
   if vim.api.nvim_win_is_valid(diff.original_win) then
     vim.w[diff.original_win].vscode_diff_restore = nil
@@ -408,10 +413,11 @@ local function cleanup_diff(tabpage)
   if vim.api.nvim_win_is_valid(diff.modified_win) then
     vim.w[diff.modified_win].vscode_diff_restore = nil
   end
-  
-  -- Clear tab-specific autocmd group
+
+  -- Clear tab-specific autocmd groups
   pcall(vim.api.nvim_del_augroup_by_name, 'vscode_diff_lifecycle_tab_' .. tabpage)
-  
+  pcall(vim.api.nvim_del_augroup_by_name, 'vscode_diff_working_sync_' .. tabpage)
+
   -- Remove from tracking
   active_diffs[tabpage] = nil
 end
@@ -443,7 +449,7 @@ function M.setup_autocmds()
       if not closed_win then
         return
       end
-      
+
       -- Give Neovim a moment to update window state
       vim.schedule(function()
         -- Check if the closed window was part of a diff
@@ -460,7 +466,7 @@ function M.setup_autocmds()
       end)
     end,
   })
-  
+
   -- When a tab is closed, cleanup its diff
   vim.api.nvim_create_autocmd('TabClosed', {
     group = augroup,
@@ -471,7 +477,7 @@ function M.setup_autocmds()
       for _, tabpage in ipairs(vim.api.nvim_list_tabpages()) do
         valid_tabs[tabpage] = true
       end
-      
+
       for tabpage, _ in pairs(active_diffs) do
         if not valid_tabs[tabpage] then
           cleanup_diff(tabpage)
@@ -479,14 +485,14 @@ function M.setup_autocmds()
       end
     end,
   })
-  
+
   -- Fallback: When entering a buffer, check if we need cleanup
   vim.api.nvim_create_autocmd('BufEnter', {
     group = augroup,
     callback = function()
       local current_tab = vim.api.nvim_get_current_tabpage()
       local diff = active_diffs[current_tab]
-      
+
       if diff then
         local diff_win_count = count_diff_windows()
         -- If only 1 diff window remains, the user likely closed the other side
@@ -537,7 +543,7 @@ end
 function M.get_git_context(tabpage)
   local session = active_diffs[tabpage]
   if not session then return nil end
-  
+
   return {
     git_root = session.git_root,
     original_revision = session.original_revision,
@@ -604,7 +610,7 @@ end
 function M.update_suspended(tabpage, suspended)
   local session = active_diffs[tabpage]
   if not session then return false end
-  
+
   session.suspended = suspended
   return true
 end
@@ -613,7 +619,7 @@ end
 function M.update_diff_result(tabpage, diff_lines)
   local session = active_diffs[tabpage]
   if not session then return false end
-  
+
   session.stored_diff_result = diff_lines
   return true
 end
@@ -622,7 +628,7 @@ end
 function M.update_changedtick(tabpage, original_tick, modified_tick)
   local session = active_diffs[tabpage]
   if not session then return false end
-  
+
   session.changedtick.original = original_tick
   session.changedtick.modified = modified_tick
   return true
@@ -632,7 +638,7 @@ end
 function M.update_mtime(tabpage, original_mtime, modified_mtime)
   local session = active_diffs[tabpage]
   if not session then return false end
-  
+
   session.mtime.original = original_mtime
   session.mtime.modified = modified_mtime
   return true
@@ -642,10 +648,166 @@ end
 function M.update_paths(tabpage, original_path, modified_path)
   local session = active_diffs[tabpage]
   if not session then return false end
-  
+
   session.original_path = original_path
   session.modified_path = modified_path
   return true
+end
+
+--- Update buffer numbers (for file switching/sync when buffers change)
+--- Also updates buffer states (for suspend/resume to work correctly)
+function M.update_buffers(tabpage, original_bufnr, modified_bufnr)
+  local session = active_diffs[tabpage]
+  if not session then return false end
+
+  session.original_bufnr = original_bufnr
+  session.modified_bufnr = modified_bufnr
+  
+  -- Save buffer states for new buffers (critical for suspend/resume!)
+  session.original_state = save_buffer_state(original_bufnr)
+  session.modified_state = save_buffer_state(modified_bufnr)
+  
+  return true
+end
+
+--- Update git root (for file switching when changing repos)
+function M.update_git_root(tabpage, git_root)
+  local session = active_diffs[tabpage]
+  if not session then return false end
+
+  session.git_root = git_root
+  return true
+end
+
+--- Update revisions (for file switching/sync)
+function M.update_revisions(tabpage, original_revision, modified_revision)
+  local session = active_diffs[tabpage]
+  if not session then return false end
+
+  session.original_revision = original_revision
+  session.modified_revision = modified_revision
+  return true
+end
+
+--- Setup auto-sync on file switch: automatically update diff when user edits a different file in working buffer
+--- Only activates when one side is virtual (git revision) and other is working file
+--- @param tabpage number Tabpage ID
+--- @param original_is_virtual boolean Whether original side is virtual (git revision)
+--- @param modified_is_virtual boolean Whether modified side is virtual
+function M.setup_auto_sync_on_file_switch(tabpage, original_is_virtual, modified_is_virtual)
+  -- Only setup if one side is virtual (commit) and other is working file
+  if original_is_virtual == modified_is_virtual then
+    return -- Both virtual or both real - no sync needed
+  end
+
+  local session = active_diffs[tabpage]
+  if not session then
+    vim.notify('[vscode-diff] No session found for auto-sync setup', vim.log.levels.ERROR)
+    return
+  end
+
+  -- Determine which window is working
+  local working_win = original_is_virtual and session.modified_win or session.original_win
+  local working_side = original_is_virtual and "modified" or "original"
+
+  if not working_win or not vim.api.nvim_win_is_valid(working_win) then
+    vim.notify('[vscode-diff] Working window not found for auto-sync', vim.log.levels.WARN)
+    return
+  end
+
+  -- Track current file path
+  local current_path = session[working_side .. '_path']
+
+  -- Setup listener using BufWinEnter (fires when buffer enters window, even if existing buffer)
+  local sync_group = vim.api.nvim_create_augroup('vscode_diff_working_sync_' .. tabpage, { clear = true })
+
+  -- Listen to BufWinEnter - fires when ANY buffer enters the window (including existing buffers)
+  vim.api.nvim_create_autocmd('BufWinEnter', {
+    group = sync_group,
+    callback = function(args)
+      -- Check if this buffer is in the working window
+      local buf_win = vim.fn.bufwinid(args.buf)
+      if buf_win ~= working_win then
+        return
+      end
+
+      local new_path = vim.api.nvim_buf_get_name(args.buf)
+
+      -- Check if file changed
+      if new_path == "" or new_path == current_path then
+        return
+      end
+
+      -- Update tracked path
+      current_path = new_path
+
+      -- Path changed! Need to update both sides
+      vim.schedule(function()
+        -- Get git root (might have changed if user switched to different repo)
+        local git = require('vscode-diff.git')
+        local view = require('vscode-diff.render.view')
+
+        git.get_git_root(new_path, function(err, new_git_root)
+          if err then
+            -- Not in git, just update paths without git context
+            vim.schedule(function()
+              local new_lines_working = vim.api.nvim_buf_get_lines(args.buf, 0, -1, false)
+              local new_lines_virtual = new_lines_working -- Can't get virtual version
+
+              -- Get relative path if possible
+              local relative_path = new_path
+              if session.git_root then
+                relative_path = git.get_relative_path(new_path, session.git_root)
+              end
+
+              view.update(tabpage,
+                working_side == "original" and new_lines_working or new_lines_virtual,
+                working_side == "modified" and new_lines_working or new_lines_virtual,
+                {
+                  mode = session.mode,
+                  git_root = nil,
+                  original_path = working_side == "original" and new_path or relative_path,
+                  modified_path = working_side == "modified" and new_path or relative_path,
+                  original_revision = working_side == "original" and nil or session.original_revision,
+                  modified_revision = working_side == "modified" and nil or session.modified_revision,
+                })
+            end)
+            return
+          end
+
+          -- In git! Get relative path
+          local relative_path = git.get_relative_path(new_path, new_git_root)
+
+          -- Get virtual file content (from commit)
+          local virtual_revision = original_is_virtual and session.original_revision or session.modified_revision
+          git.get_file_content(virtual_revision, new_git_root, relative_path, function(err_content, virtual_lines)
+            vim.schedule(function()
+              if err_content then
+                vim.notify("Failed to get file from " .. virtual_revision .. ": " .. err_content, vim.log.levels.WARN)
+                return
+              end
+
+              -- Get working file content
+              local working_lines = vim.api.nvim_buf_get_lines(args.buf, 0, -1, false)
+
+              -- Update both sides
+              view.update(tabpage,
+                original_is_virtual and virtual_lines or working_lines,
+                modified_is_virtual and virtual_lines or working_lines,
+                {
+                  mode = session.mode,
+                  git_root = new_git_root,
+                  original_path = relative_path,
+                  modified_path = relative_path,
+                  original_revision = session.original_revision,
+                  modified_revision = session.modified_revision,
+                })
+            end)
+          end)
+        end)
+      end)
+    end,
+  })
 end
 
 return M

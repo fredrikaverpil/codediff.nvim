@@ -80,6 +80,21 @@ local function compute_and_render(original_buf, modified_buf, original_lines, mo
     semantic.apply_semantic_tokens(modified_buf, original_buf)
   end
 
+  -- Setup scrollbind synchronization (only if windows provided)
+  if original_win and modified_win then
+    -- Step 1: Cancel previous scrollbind
+    vim.wo[original_win].scrollbind = false
+    vim.wo[modified_win].scrollbind = false
+
+    -- Step 2: Scroll both to line 1 (baseline for sync)
+    vim.api.nvim_win_set_cursor(original_win, {1, 0})
+    vim.api.nvim_win_set_cursor(modified_win, {1, 0})
+
+    -- Step 3: Re-enable scrollbind
+    vim.wo[original_win].scrollbind = true
+    vim.wo[modified_win].scrollbind = true
+  end
+
   -- Auto-scroll to first change (only if windows provided)
   if original_win and modified_win and #lines_diff.changes > 0 then
     local first_change = lines_diff.changes[1]
@@ -102,13 +117,12 @@ local function setup_auto_refresh(original_buf, modified_buf, original_is_virtua
   if not original_is_virtual then
     auto_refresh.enable(original_buf)
   end
-  
+
   if not modified_is_virtual then
     auto_refresh.enable(modified_buf)
   end
 end
 
----Create side-by-side diff view
 ---@param original_lines string[] Lines from the original version
 ---@param modified_lines string[] Lines from the modified version
 ---@param session_config SessionConfig Session configuration
@@ -119,9 +133,9 @@ function M.create(original_lines, modified_lines, session_config, filetype)
   if session_config.mode == "standalone" then
     vim.cmd("tabnew")
   end
-  
+
   local tabpage = vim.api.nvim_get_current_tabpage()
-  
+
   -- Create lifecycle session with git context
   lifecycle.create_session(
     tabpage,
@@ -182,16 +196,11 @@ function M.create(original_lines, modified_lines, session_config, filetype)
     pcall(vim.api.nvim_buf_delete, initial_buf, { force = true })
   end
 
-  -- Reset both cursors to line 1 BEFORE enabling scrollbind
-  vim.api.nvim_win_set_cursor(original_win, {1, 0})
-  vim.api.nvim_win_set_cursor(modified_win, {1, 0})
-
-  -- Window options
+  -- Window options (scrollbind will be set by compute_and_render)
   local win_opts = {
     number = true,
     relativenumber = false,
     cursorline = true,
-    scrollbind = true,
     wrap = false,
     winbar = "",  -- Disable winbar to ensure alignment between windows
   }
@@ -213,13 +222,16 @@ function M.create(original_lines, modified_lines, session_config, filetype)
       original_is_virtual, modified_is_virtual,
       original_win, modified_win
     )
-    
+
     if lines_diff then
       -- Complete lifecycle session with buffer/window info
       lifecycle.complete_session(tabpage, original_info.bufnr, modified_info.bufnr, original_win, modified_win, lines_diff)
-      
+
       -- Enable auto-refresh for real file buffers only
       setup_auto_refresh(original_info.bufnr, modified_info.bufnr, original_is_virtual, modified_is_virtual)
+
+      -- Setup auto-sync on file switch (after session is complete!)
+      lifecycle.setup_auto_sync_on_file_switch(tabpage, original_is_virtual, modified_is_virtual)
     end
   end
 
@@ -229,20 +241,20 @@ function M.create(original_lines, modified_lines, session_config, filetype)
     -- Track which virtual buffers have loaded
     local loaded_buffers = {}
     local group = vim.api.nvim_create_augroup('VscodeDiffVirtualFileHighlight_' .. tabpage, { clear = true })
-    
+
     vim.api.nvim_create_autocmd('User', {
       group = group,
       pattern = 'VscodeDiffVirtualFileLoaded',
       callback = function(event)
         if not event.data or not event.data.buf then return end
-        
+
         local loaded_buf = event.data.buf
-        
+
         -- Check if this is one of our virtual buffers
         if (original_is_virtual and loaded_buf == original_info.bufnr) or
            (modified_is_virtual and loaded_buf == modified_info.bufnr) then
           loaded_buffers[loaded_buf] = true
-          
+
           -- Check if all virtual buffers are loaded
           local all_loaded = true
           if original_is_virtual and not loaded_buffers[original_info.bufnr] then
@@ -251,7 +263,7 @@ function M.create(original_lines, modified_lines, session_config, filetype)
           if modified_is_virtual and not loaded_buffers[modified_info.bufnr] then
             all_loaded = false
           end
-          
+
           -- Render once all virtual buffers are ready
           if all_loaded then
             vim.schedule(render_everything)
@@ -280,6 +292,7 @@ end
 ---@param session_config SessionConfig New session configuration (updates both sides)
 ---@return boolean success Whether update succeeded
 function M.update(tabpage, original_lines, modified_lines, session_config)
+
   -- Get existing session
   local session = lifecycle.get_session(tabpage)
   if not session then
@@ -290,7 +303,7 @@ function M.update(tabpage, original_lines, modified_lines, session_config)
   -- Get existing buffers and windows
   local old_original_buf, old_modified_buf = lifecycle.get_buffers(tabpage)
   local original_win, modified_win = lifecycle.get_windows(tabpage)
-  
+
   if not old_original_buf or not old_modified_buf or not original_win or not modified_win then
     vim.notify("Invalid diff session state", vim.log.levels.ERROR)
     return false
@@ -299,6 +312,10 @@ function M.update(tabpage, original_lines, modified_lines, session_config)
   -- Disable auto-refresh temporarily
   auto_refresh.disable(old_original_buf)
   auto_refresh.disable(old_modified_buf)
+
+  -- Clear highlights from old buffers (before they're replaced/deleted)
+  lifecycle.clear_highlights(old_original_buf)
+  lifecycle.clear_highlights(old_modified_buf)
 
   -- Determine if new buffers are virtual
   local original_is_virtual = is_virtual_revision(session_config.original_revision)
@@ -338,7 +355,7 @@ function M.update(tabpage, original_lines, modified_lines, session_config)
 
   -- Update lifecycle session metadata
   lifecycle.update_paths(tabpage, session_config.original_path, session_config.modified_path)
-  
+
   -- Delete old virtual buffers if they were virtual
   if lifecycle.is_original_virtual(tabpage) and old_original_buf ~= original_info.bufnr then
     pcall(vim.api.nvim_buf_delete, old_original_buf, { force = true })
@@ -350,27 +367,31 @@ function M.update(tabpage, original_lines, modified_lines, session_config)
   -- Update session with new buffer/window IDs
   -- Note: We need to update lifecycle to support this, or recreate session
   -- For now, we'll update the stored diff result and metadata
-  
+
   -- Determine if we need to wait for virtual file content
   local has_virtual_buffer = original_is_virtual or modified_is_virtual
 
   local render_everything = function()
+    -- Compute and render (scrollbind will be handled inside)
     local lines_diff = compute_and_render(
       original_info.bufnr, modified_info.bufnr,
       original_lines, modified_lines,
       original_is_virtual, modified_is_virtual,
       original_win, modified_win
     )
-    
+
     if lines_diff then
-      -- Update lifecycle with new diff result
+      -- Update lifecycle session with all new state
+      lifecycle.update_buffers(tabpage, original_info.bufnr, modified_info.bufnr)
+      lifecycle.update_git_root(tabpage, session_config.git_root)
+      lifecycle.update_revisions(tabpage, session_config.original_revision, session_config.modified_revision)
       lifecycle.update_diff_result(tabpage, lines_diff)
       lifecycle.update_changedtick(
         tabpage,
         vim.api.nvim_buf_get_changedtick(original_info.bufnr),
         vim.api.nvim_buf_get_changedtick(modified_info.bufnr)
       )
-      
+
       -- Re-enable auto-refresh for real file buffers
       setup_auto_refresh(original_info.bufnr, modified_info.bufnr, original_is_virtual, modified_is_virtual)
     end
@@ -382,20 +403,20 @@ function M.update(tabpage, original_lines, modified_lines, session_config)
     -- Track which virtual buffers have loaded
     local loaded_buffers = {}
     local group = vim.api.nvim_create_augroup('VscodeDiffVirtualFileUpdate_' .. tabpage, { clear = true })
-    
+
     vim.api.nvim_create_autocmd('User', {
       group = group,
       pattern = 'VscodeDiffVirtualFileLoaded',
       callback = function(event)
         if not event.data or not event.data.buf then return end
-        
+
         local loaded_buf = event.data.buf
-        
+
         -- Check if this is one of our virtual buffers
         if (original_is_virtual and loaded_buf == original_info.bufnr) or
            (modified_is_virtual and loaded_buf == modified_info.bufnr) then
           loaded_buffers[loaded_buf] = true
-          
+
           -- Check if all virtual buffers are loaded
           local all_loaded = true
           if original_is_virtual and not loaded_buffers[original_info.bufnr] then
@@ -404,7 +425,7 @@ function M.update(tabpage, original_lines, modified_lines, session_config)
           if modified_is_virtual and not loaded_buffers[modified_info.bufnr] then
             all_loaded = false
           end
-          
+
           -- Render once all virtual buffers are ready
           if all_loaded then
             vim.schedule(render_everything)
