@@ -11,6 +11,9 @@ string(STRIP "${PROJECT_VERSION}" PROJECT_VERSION)
 
 project(libvscode-diff VERSION ${PROJECT_VERSION} LANGUAGES C)
 
+# Generate compile_commands.json for LSP/clangd
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # C Standard
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -73,7 +76,6 @@ endif()
 
 # Source files for shared library
 set(DIFF_CORE_SOURCES
-    src/diff_api.c
     default_lines_diff_computer.c
     src/char_level.c
     src/line_level.c
@@ -190,7 +192,6 @@ set(TEST_COMMON_SOURCES
     src/line_level.c
     src/char_level.c
     src/range_mapping.c
-    src/diff_api.c
     src/utf8_utils.c
     default_lines_diff_computer.c
 )

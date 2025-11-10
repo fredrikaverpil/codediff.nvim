@@ -167,7 +167,10 @@ int main(int argc, char* argv[]) {
 
     // Parse optional flags
     while (arg_idx < argc && argv[arg_idx][0] == '-') {
-        if (strcmp(argv[arg_idx], "-b") == 0) {
+        if (strcmp(argv[arg_idx], "--version") == 0 || strcmp(argv[arg_idx], "-v") == 0) {
+            printf("vscode-diff %s\n", get_version());
+            return 0;
+        } else if (strcmp(argv[arg_idx], "-b") == 0) {
             show_timing = true;
             arg_idx++;
         } else if (strcmp(argv[arg_idx], "-T") == 0 || strcmp(argv[arg_idx], "--timeout") == 0) {
@@ -184,15 +187,17 @@ int main(int argc, char* argv[]) {
             arg_idx += 2;
         } else {
             fprintf(stderr, "Error: Unknown option: %s\n", argv[arg_idx]);
-            fprintf(stderr, "Usage: %s [-b] [-T <ms>] <original_file> <modified_file>\n", argv[0]);
+            fprintf(stderr, "Usage: %s [options] <original_file> <modified_file>\n", argv[0]);
+            fprintf(stderr, "Try '%s --version' for version information\n", argv[0]);
             return 1;
         }
     }
 
     // Check for required file arguments
     if (argc - arg_idx != 2) {
-        fprintf(stderr, "Usage: %s [-b] [-T <ms>] <original_file> <modified_file>\n", argv[0]);
+        fprintf(stderr, "Usage: %s [options] <original_file> <modified_file>\n", argv[0]);
         fprintf(stderr, "Options:\n");
+        fprintf(stderr, "  -v, --version   Show version information\n");
         fprintf(stderr, "  -b              Show benchmark timing information\n");
         fprintf(stderr, "  -T <ms>         Set timeout in milliseconds (default: 5000, 0 = no timeout)\n");
         fprintf(stderr, "  --timeout <ms>  Same as -T\n");

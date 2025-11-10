@@ -24,3 +24,4 @@ example/
 Thumbs.db
 .cache/
 tests/plenary.nvim
+compile_commands.json

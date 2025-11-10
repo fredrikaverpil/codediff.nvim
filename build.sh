@@ -28,7 +28,6 @@ LDFLAGS="-shared -lm"
 
 # Source files (including bundled utf8proc)
 SOURCES="\
-src/diff_api.c \
 default_lines_diff_computer.c \
 src/char_level.c \
 src/line_level.c \
