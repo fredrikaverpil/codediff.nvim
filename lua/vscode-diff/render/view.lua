@@ -58,7 +58,8 @@ end
 ---@field modified_revision string?
 
 -- Common logic: Compute diff and render highlights
-local function compute_and_render(original_buf, modified_buf, original_lines, modified_lines, original_is_virtual, modified_is_virtual, original_win, modified_win)
+-- @param auto_scroll_to_first_hunk boolean: Whether to auto-scroll to first change (default true)
+local function compute_and_render(original_buf, modified_buf, original_lines, modified_lines, original_is_virtual, modified_is_virtual, original_win, modified_win, auto_scroll_to_first_hunk)
   -- Compute diff
   local diff_options = {
     max_computation_time_ms = config.options.diff.max_computation_time_ms,
@@ -82,30 +83,40 @@ local function compute_and_render(original_buf, modified_buf, original_lines, mo
 
   -- Setup scrollbind synchronization (only if windows provided)
   if original_win and modified_win then
+    -- Save cursor position if we need to preserve it (on update)
+    local saved_cursor = nil
+    if not auto_scroll_to_first_hunk then
+      saved_cursor = vim.api.nvim_win_get_cursor(modified_win)
+    end
+    
     -- Step 1: Cancel previous scrollbind
     vim.wo[original_win].scrollbind = false
     vim.wo[modified_win].scrollbind = false
 
-    -- Step 2: Scroll both to line 1 (baseline for sync)
+    -- Step 2: ATOMIC - Reset both to line 1 AND re-enable scrollbind together
+    -- This ensures scrollbind is established with proper baseline for filler lines
     vim.api.nvim_win_set_cursor(original_win, {1, 0})
     vim.api.nvim_win_set_cursor(modified_win, {1, 0})
-
-    -- Step 3: Re-enable scrollbind
     vim.wo[original_win].scrollbind = true
     vim.wo[modified_win].scrollbind = true
-  end
+    
+    -- Step 3a: On create, scroll to first change
+    if auto_scroll_to_first_hunk and #lines_diff.changes > 0 then
+      local first_change = lines_diff.changes[1]
+      local target_line = first_change.original.start_line
 
-  -- Auto-scroll to first change (only if windows provided)
-  if original_win and modified_win and #lines_diff.changes > 0 then
-    local first_change = lines_diff.changes[1]
-    local target_line = first_change.original.start_line
+      pcall(vim.api.nvim_win_set_cursor, original_win, {target_line, 0})
+      pcall(vim.api.nvim_win_set_cursor, modified_win, {target_line, 0})
 
-    pcall(vim.api.nvim_win_set_cursor, original_win, {target_line, 0})
-    pcall(vim.api.nvim_win_set_cursor, modified_win, {target_line, 0})
-
-    if vim.api.nvim_win_is_valid(modified_win) then
-      vim.api.nvim_set_current_win(modified_win)
-      vim.cmd("normal! zz")
+      if vim.api.nvim_win_is_valid(modified_win) then
+        vim.api.nvim_set_current_win(modified_win)
+        vim.cmd("normal! zz")
+      end
+    -- Step 3b: On update, restore saved cursor position
+    elseif saved_cursor then
+      pcall(vim.api.nvim_win_set_cursor, modified_win, saved_cursor)
+      -- Sync original window to same line (scrollbind will handle column)
+      pcall(vim.api.nvim_win_set_cursor, original_win, {saved_cursor[1], 0})
     end
   end
 
@@ -209,7 +220,8 @@ function M.create(original_lines, modified_lines, session_config, filetype)
       original_info.bufnr, modified_info.bufnr,
       original_lines, modified_lines,
       original_is_virtual, modified_is_virtual,
-      original_win, modified_win
+      original_win, modified_win,
+      true  -- auto_scroll_to_first_hunk = true on create
     )
 
     if lines_diff then
@@ -379,7 +391,8 @@ function M.update(tabpage, original_lines, modified_lines, session_config)
       original_info.bufnr, modified_info.bufnr,
       original_lines, modified_lines,
       original_is_virtual, modified_is_virtual,
-      original_win, modified_win
+      original_win, modified_win,
+      false  -- auto_scroll_to_first_hunk = false on update (preserve cursor!)
     )
 
     if lines_diff then
