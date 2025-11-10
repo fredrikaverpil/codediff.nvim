@@ -288,6 +288,11 @@ function M.install(opts)
   end
   
   -- Move to final location
+  -- On Windows, os.rename fails if destination exists, so remove it first
+  if vim.fn.filereadable(lib_path) == 1 then
+    os.remove(lib_path)
+  end
+  
   local ok = os.rename(temp_path, lib_path)
   if not ok then
     local msg = "Failed to move library to final location: " .. lib_path
