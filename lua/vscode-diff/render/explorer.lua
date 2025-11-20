@@ -363,6 +363,15 @@ function M.create(status_result, git_root, tabpage, width)
       end,
     })
   end, vim.tbl_extend("force", map_options, { buffer = split.bufnr }))
+  
+  -- Refresh explorer (R key)
+  vim.keymap.set("n", "R", function()
+    local explorer_obj = {
+      tree = tree,
+      git_root = git_root,
+    }
+    M.refresh(explorer_obj)
+  end, vim.tbl_extend("force", map_options, { buffer = split.bufnr }))
 
   -- Select first file by default
   local first_file = nil
@@ -387,12 +396,129 @@ function M.create(status_result, git_root, tabpage, width)
     end, 100)
   end
 
-  return {
+  local explorer = {
     split = split,
     tree = tree,
     bufnr = split.bufnr,
     winid = split.winid,
+    git_root = git_root,
+    on_file_select = on_file_select,
   }
+  
+  -- Setup auto-refresh
+  M.setup_auto_refresh(explorer, tabpage)
+  
+  return explorer
+end
+
+-- Setup auto-refresh on file save and focus
+function M.setup_auto_refresh(explorer, tabpage)
+  local refresh_timer = nil
+  local debounce_ms = 500  -- Wait 500ms after last event
+  
+  local function debounced_refresh()
+    -- Cancel pending refresh
+    if refresh_timer then
+      vim.fn.timer_stop(refresh_timer)
+    end
+    
+    -- Schedule new refresh
+    refresh_timer = vim.fn.timer_start(debounce_ms, function()
+      -- Only refresh if tabpage still exists
+      if vim.api.nvim_tabpage_is_valid(tabpage) then
+        M.refresh(explorer)
+      end
+      refresh_timer = nil
+    end)
+  end
+  
+  -- Auto-refresh on BufWritePost (file save)
+  local group = vim.api.nvim_create_augroup('VscodeDiffExplorerRefresh_' .. tabpage, { clear = true })
+  
+  vim.api.nvim_create_autocmd('BufWritePost', {
+    group = group,
+    callback = function(args)
+      -- Only refresh if file is in the same git repo
+      local buf_path = vim.api.nvim_buf_get_name(args.buf)
+      if buf_path:find(explorer.git_root, 1, true) == 1 then
+        debounced_refresh()
+      end
+    end,
+  })
+  
+  -- Auto-refresh on FocusGained (window focus)
+  vim.api.nvim_create_autocmd('FocusGained', {
+    group = group,
+    callback = function()
+      if vim.api.nvim_tabpage_is_valid(tabpage) then
+        debounced_refresh()
+      end
+    end,
+  })
+  
+  -- Clean up on tab close
+  vim.api.nvim_create_autocmd('TabClosed', {
+    pattern = tostring(tabpage),
+    callback = function()
+      if refresh_timer then
+        vim.fn.timer_stop(refresh_timer)
+      end
+      pcall(vim.api.nvim_del_augroup_by_id, group)
+    end,
+  })
+end
+
+-- Refresh explorer with updated git status
+function M.refresh(explorer)
+  local git = require('vscode-diff.git')
+  
+  -- Get current selection to restore it after refresh
+  local current_node = explorer.tree:get_node()
+  local current_path = current_node and current_node.data and current_node.data.path
+  
+  git.get_status(explorer.git_root, function(err, status_result)
+    vim.schedule(function()
+      if err then
+        vim.notify("Failed to refresh: " .. err, vim.log.levels.ERROR)
+        return
+      end
+      
+      -- Rebuild tree nodes using same structure as create_tree_data
+      local unstaged_nodes = create_file_nodes(status_result.unstaged, explorer.git_root, "unstaged")
+      local staged_nodes = create_file_nodes(status_result.staged, explorer.git_root, "staged")
+      
+      local root_nodes = {
+        Tree.Node({
+          text = string.format("Changes (%d)", #status_result.unstaged),
+          data = { type = "group", name = "unstaged" },
+        }, unstaged_nodes),
+        Tree.Node({
+          text = string.format("Staged Changes (%d)", #status_result.staged),
+          data = { type = "group", name = "staged" },
+        }, staged_nodes),
+      }
+      
+      -- Expand all groups
+      for _, node in ipairs(root_nodes) do
+        node:expand()
+      end
+      
+      -- Update tree
+      explorer.tree:set_nodes(root_nodes)
+      explorer.tree:render()
+      
+      -- Try to restore selection
+      if current_path then
+        local nodes = explorer.tree:get_nodes()
+        for _, node in ipairs(nodes) do
+          if node.data and node.data.path == current_path then
+            explorer.tree:set_node(node:get_id())
+            break
+          end
+        end
+      end
+    end)
+  end)
 end
 
 return M
