@@ -23,7 +23,7 @@ echo "Platform: $PLATFORM"
 
 # Compiler and flags from CMake configuration
 CC="/usr/bin/cc"
-CFLAGS=" -Wall -Wextra -O2 -DNDEBUG -Iinclude -Ivendor -fPIC"
+CFLAGS=" -Wall -Wextra -O2 -DNDEBUG -Iinclude -Ibuild/include -Ivendor -fPIC"
 LDFLAGS="-shared -lm"
 
 # Source files (including bundled utf8proc)
@@ -43,6 +43,12 @@ vendor/utf8proc.c"
 
 # Build
 mkdir -p build
+mkdir -p build/include
+
+# Generate version.h
+VERSION=$(cat ../VERSION | tr -d '[:space:]')
+sed "s/@1.0.0@/$VERSION/g" include/version.h.in > build/include/version.h
+
 echo "Compiling..."
 $CC $CFLAGS $LDFLAGS -o libvscode_diff.$LIB_EXT $SOURCES
 
