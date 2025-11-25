@@ -123,47 +123,49 @@ The installer reads the `VERSION` file to download the matching library version 
 
 ### Manual Installation
 
-1. Clone the repository:
+If you prefer to install manually without a plugin manager:
+
+1. **Clone the repository:**
 ```bash
 git clone https://github.com/esmuellert/vscode-diff.nvim ~/.local/share/nvim/vscode-diff.nvim
 ```
 
-2. Add to your Neovim runtime path in `init.lua`:
+2. **Add to your Neovim runtime path in `init.lua`:**
 ```lua
 vim.opt.rtp:append("~/.local/share/nvim/vscode-diff.nvim")
 ```
 
-The C library will be downloaded automatically on first use.
+3. **Install the C library:**
 
-### Building from Source (Optional)
+The plugin requires a C library binary in the plugin root directory. The plugin auto-detects these filenames:
+- `libvscode_diff.so` or `libvscode_diff_<version>.so` (Linux/BSD)
+- `libvscode_diff.dylib` or `libvscode_diff_<version>.dylib` (macOS)
+- `libvscode_diff.dll` or `libvscode_diff_<version>.dll` (Windows)
 
-If you prefer to build the C library yourself instead of using pre-built binaries:
+**Option A: Download from GitHub releases** (recommended)
 
-**Build requirements:**
-- **Option 1 (build.sh/build.cmd)**: C compiler (GCC/Clang/MSVC/MinGW) - auto-detected
-- **Option 2 (CMake)**: CMake 3.15+ and C compiler
+Download the appropriate binary from the [GitHub releases page](https://github.com/esmuellert/vscode-diff.nvim/releases) and place it in the plugin root directory. Rename it to match the expected format: `libvscode_diff.so`/`.dylib`/`.dll` or `libvscode_diff_<version>.so`/`.dylib`/`.dll`.
 
-**Option 1: Ready-to-use build scripts (no CMake required)**
+**Option B: Build from source**
 
-Linux/macOS/BSD:
+Build requirements: C compiler (GCC/Clang/MSVC/MinGW) or CMake 3.15+
+
+Using build scripts (no CMake required):
 ```bash
-cd ~/.local/share/nvim/vscode-diff.nvim
+# Linux/macOS/BSD
 ./build.sh
-```
 
-Windows:
-```cmd
-cd %LOCALAPPDATA%\nvim-data\lazy\vscode-diff.nvim
+# Windows
 build.cmd
 ```
 
-**Option 2: CMake (for advanced users)**
-
-All platforms:
+Or using CMake:
 ```bash
 cmake -B build
 cmake --build build
 ```
+
+Both methods automatically place the library in the plugin root directory.
 
 ## Usage
 
