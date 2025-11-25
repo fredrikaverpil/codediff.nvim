@@ -74,6 +74,15 @@ else
     fi
 fi
 
+# Auto-detect default branch (try origin/main, origin/master, HEAD)
+if git -C "$TARGET_REPO_ROOT" rev-parse --verify origin/main >/dev/null 2>&1; then
+    BASE_REF="origin/main"
+elif git -C "$TARGET_REPO_ROOT" rev-parse --verify origin/master >/dev/null 2>&1; then
+    BASE_REF="origin/master"
+else
+    BASE_REF="HEAD"
+fi
+
 # Set example directory in /tmp with repo-specific name
 REPO_NAME=$(basename "$TARGET_REPO_ROOT")
 EXAMPLE_DIR="/tmp/diff_comparison_examples_${REPO_NAME}_$$"
