@@ -130,13 +130,13 @@ jobs:
               sed -i 's|^#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*.repo
               yum install -y epel-release
               yum install -y centos-release-scl
-              # Fix all repos including SCLo repos - use comprehensive approach
-              for repo in /etc/yum.repos.d/*.repo; do
-                sed -i 's/^mirrorlist/#mirrorlist/g' \"\$repo\"
-                sed -i 's/^#baseurl/baseurl/g' \"\$repo\"
-                sed -i 's|baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' \"\$repo\"
-              done
-              yum clean all
+              # Delete problematic centos-sclo-sclo repo (not needed for devtoolset-11)
+              rm -f /etc/yum.repos.d/CentOS-SCLo-scl.repo
+              # Fix only the SCL-RH repo that we actually need
+              sed -i -e 's/^mirrorlist/#mirrorlist/' \
+                     -e 's/^#baseurl/baseurl/' \
+                     -e 's/mirror\.centos\.org/vault.centos.org/' \
+                     /etc/yum.repos.d/CentOS-SCLo-scl-rh.repo
               yum install -y devtoolset-11-gcc devtoolset-11-gcc-c++ cmake3 make
               source /opt/rh/devtoolset-11/enable
               ln -s /usr/bin/cmake3 /usr/local/bin/cmake
