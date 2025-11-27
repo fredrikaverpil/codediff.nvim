@@ -114,16 +114,64 @@ jobs:
           
           & "$nvimBinPath\nvim.exe" --version | Select-Object -First 1
 
-      - name: Build library (Ubuntu/macOS)
-        if: startsWith(matrix.runs-on, 'ubuntu') || startsWith(matrix.runs-on, 'macos')
+      - name: Build library (Ubuntu in CentOS 7 Docker for GLIBC 2.17 compatibility)
+        if: startsWith(matrix.runs-on, 'ubuntu')
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            -e HOST_UID=$(id -u) \
+            -e HOST_GID=$(id -g) \
+            centos:7 \
+            bash -c "
+              set -e
+              # CentOS 7 is EOL, use vault archives (following c-ares approach)
+              sed -i -e 's/^mirrorlist/#mirrorlist/' -e 's/^#baseurl/baseurl/' -e 's/mirror.centos.org/vault.centos.org/' /etc/yum.repos.d/*.repo
+              yum clean all
+              yum install -y epel-release
+              yum install -y centos-release-scl
+              # Delete problematic centos-sclo-sclo repo (from Apache Gluten approach)
+              rm -f /etc/yum.repos.d/CentOS-SCLo-scl.repo
+              # ARM64: devtoolset-11 not available, use system GCC
+              # x86_64: use devtoolset-11 for modern GCC with old GLIBC
+              if [ \$(uname -m) = \"aarch64\" ]; then
+                # Remove SCL-RH repo (not needed for system GCC)
+                rm -f /etc/yum.repos.d/CentOS-SCLo-scl-rh.repo
+                yum install -y gcc gcc-c++ make curl
+                # ARM64 cmake3 in EPEL is 3.14.6, need 3.15+. Use CMake 3.20.0 (first with ARM64 support).
+                curl -LO https://github.com/Kitware/CMake/releases/download/v3.20.0/cmake-3.20.0-linux-aarch64.tar.gz
+                tar --strip-components=1 -xzf cmake-3.20.0-linux-aarch64.tar.gz -C /usr/local
+              else
+                sed -i -e 's/^mirrorlist/#mirrorlist/' -e 's/^#baseurl/baseurl/' -e 's/mirror\.centos\.org/vault.centos.org/' /etc/yum.repos.d/CentOS-SCLo-scl-rh.repo
+                yum install -y devtoolset-11-gcc devtoolset-11-gcc-c++ cmake3 make
+                source /opt/rh/devtoolset-11/enable
+                ln -s /usr/bin/cmake3 /usr/local/bin/cmake
+              fi
+              make build
+              # Fix ownership of build artifacts for host user
+              chown -R \$HOST_UID:\$HOST_GID build/ libvscode_diff.so 2>/dev/null || true
+            "
+
+      - name: Build library (macOS)
+        if: startsWith(matrix.runs-on, 'macos')
         run: make build
 
       - name: Build library (Windows)
         if: startsWith(matrix.runs-on, 'windows')
         run: nmake /f Makefile.win build
 
-      - name: Run C unit tests (Ubuntu/macOS)
-        if: startsWith(matrix.runs-on, 'ubuntu') || startsWith(matrix.runs-on, 'macos')
+      - name: Run C unit tests (Ubuntu)
+        if: startsWith(matrix.runs-on, 'ubuntu')
+        run: |
+          # Run test executables directly (bypass ctest which has Docker paths)
+          cd build/libvscode-diff
+          for test in test_*; do
+            echo "Running $test..."
+            ./$test || exit 1
+          done
+
+      - name: Run C unit tests (macOS)
+        if: startsWith(matrix.runs-on, 'macos')
         run: make test-c
 
       - name: Run Valgrind memory leak test (Ubuntu only)
