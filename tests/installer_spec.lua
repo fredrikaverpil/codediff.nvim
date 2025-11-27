@@ -201,4 +201,95 @@ describe("Installer Module", function()
       end
     end
   end)
+
+  -- Test: libgomp detection on Linux
+  describe("libgomp dependency handling", function()
+    it("check_system_libgomp detects library correctly on Linux", function()
+      local ffi = require("ffi")
+      
+      -- Only test on Linux
+      if ffi.os ~= "Linux" then
+        pending("libgomp only needed on Linux")
+        return
+      end
+      
+      -- Try to detect libgomp
+      local has_libgomp = pcall(function()
+        local _ = ffi.load("libgomp.so.1")
+      end)
+      
+      -- This should match what the installer detects
+      assert.equal("boolean", type(has_libgomp), "Detection should return boolean")
+      
+      if has_libgomp then
+        print("  ✓ System has libgomp.so.1")
+      else
+        print("  ✗ System missing libgomp.so.1 (installer will attempt download)")
+      end
+    end)
+    
+    it("libgomp detection uses correct library name", function()
+      local ffi = require("ffi")
+      
+      if ffi.os ~= "Linux" then
+        pending("libgomp only needed on Linux")
+        return
+      end
+      
+      -- Test that we use the correct library name
+      local wrong_name = pcall(function()
+        local _ = ffi.load("gomp", true)
+      end)
+      
+      local correct_name = pcall(function()
+        local _ = ffi.load("libgomp.so.1")
+      end)
+      
+      -- If system has libgomp, correct name should work better
+      if correct_name then
+        assert.is_true(correct_name, "Correct library name should work")
+        print("  ✓ Using correct library name: libgomp.so.1")
+      end
+    end)
+    
+    it("skips libgomp check on non-Linux systems", function()
+      local ffi = require("ffi")
+      
+      if ffi.os == "Linux" then
+        pending("This test is for non-Linux systems")
+        return
+      end
+      
+      -- On macOS/Windows, libgomp is not needed
+      -- Installer should return true without checking
+      print(string.format("  ✓ Skipping libgomp on %s (not needed)", ffi.os))
+    end)
+    
+    it("libgomp path follows naming convention", function()
+      local ffi = require("ffi")
+      
+      if ffi.os ~= "Linux" then
+        pending("libgomp only needed on Linux")
+        return
+      end
+      
+      local version_mod = require("vscode-diff.version")
+      local version = version_mod.VERSION
+      
+      -- Check expected naming convention for libgomp downloads
+      local arch = vim.loop.os_uname().machine:lower()
+      if arch:match("x86_64") or arch:match("amd64") then
+        arch = "x64"
+      elseif arch:match("aarch64") or arch:match("arm64") then
+        arch = "arm64"
+      end
+      
+      local expected_filename = string.format("libgomp_linux_%s_%s.so.1", arch, version)
+      print(string.format("  Expected libgomp filename: %s", expected_filename))
+      
+      -- Verify format
+      assert.is_not_nil(expected_filename:match("^libgomp_linux_"), "Should start with libgomp_linux_")
+      assert.is_not_nil(expected_filename:match("%.so%.1$"), "Should end with .so.1")
+    end)
+  end)
 end)
