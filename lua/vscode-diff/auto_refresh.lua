@@ -328,6 +328,19 @@ function M.disable_result(bufnr)
   pcall(vim.api.nvim_del_augroup_by_name, 'vscode_diff_result_refresh_' .. bufnr)
 end
 
+-- Immediately refresh result buffer diff (call after programmatic changes)
+function M.refresh_result_now(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  -- Cancel pending timer if any
+  if result_timers[bufnr] then
+    vim.fn.timer_stop(result_timers[bufnr])
+    result_timers[bufnr] = nil
+  end
+  do_result_diff_update(bufnr)
+end
+
 -- Cleanup all active sessions
 function M.cleanup_all()
   for bufnr, _ in pairs(active_sessions) do

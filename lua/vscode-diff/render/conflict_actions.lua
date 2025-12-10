@@ -4,6 +4,7 @@ local M = {}
 
 local lifecycle = require('vscode-diff.render.lifecycle')
 local config = require('vscode-diff.config')
+local auto_refresh = require('vscode-diff.auto_refresh')
 
 --- Find which conflict block the cursor is in
 --- @param cursor_line number 1-based line number
@@ -128,6 +129,7 @@ function M.accept_incoming(tabpage)
   end
 
   apply_to_result(result_bufnr, block.base_range, incoming_lines, base_lines)
+  auto_refresh.refresh_result_now(result_bufnr)
   return true
 end
 
@@ -176,6 +178,7 @@ function M.accept_current(tabpage)
   end
 
   apply_to_result(result_bufnr, block.base_range, current_lines, base_lines)
+  auto_refresh.refresh_result_now(result_bufnr)
   return true
 end
 
@@ -234,6 +237,7 @@ function M.accept_both(tabpage)
   end
 
   apply_to_result(result_bufnr, block.base_range, combined, base_lines)
+  auto_refresh.refresh_result_now(result_bufnr)
   return true
 end
 
@@ -290,6 +294,7 @@ function M.discard(tabpage)
   end
 
   apply_to_result(result_bufnr, block.base_range, base_content, base_lines)
+  auto_refresh.refresh_result_now(result_bufnr)
   return true
 end
 
