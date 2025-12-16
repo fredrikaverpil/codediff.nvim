@@ -6,6 +6,40 @@ local NuiLine = require("nui.line")
 local Split = require("nui.split")
 local config = require("vscode-diff.config")
 
+-- Merge artifact patterns (created by git mergetool)
+local MERGE_ARTIFACT_PATTERNS = {
+  "%.orig$",           -- file.orig
+  "%.BACKUP%.",        -- file.BACKUP.xxxxx
+  "%.BASE%.",          -- file.BASE.xxxxx
+  "%.LOCAL%.",         -- file.LOCAL.xxxxx
+  "%.REMOTE%.",        -- file.REMOTE.xxxxx
+}
+
+-- Check if a file path matches merge artifact patterns
+local function is_merge_artifact(path)
+  for _, pattern in ipairs(MERGE_ARTIFACT_PATTERNS) do
+    if path:match(pattern) then
+      return true
+    end
+  end
+  return false
+end
+
+-- Filter out merge artifacts from file list
+local function filter_merge_artifacts(files)
+  if not config.options.diff.hide_merge_artifacts then
+    return files
+  end
+  
+  local filtered = {}
+  for _, file in ipairs(files) do
+    if not is_merge_artifact(file.path) then
+      table.insert(filtered, file)
+    end
+  end
+  return filtered
+end
+
 -- Status symbols and colors
 local STATUS_SYMBOLS = {
   M = { symbol = "M", color = "DiagnosticWarn" },
@@ -52,15 +86,20 @@ end
 
 -- Create explorer tree structure
 local function create_tree_data(status_result, git_root, base_revision)
-  local unstaged_nodes = create_file_nodes(status_result.unstaged, git_root, "unstaged")
-  local staged_nodes = create_file_nodes(status_result.staged, git_root, "staged")
-  local conflict_nodes = status_result.conflicts and create_file_nodes(status_result.conflicts, git_root, "conflicts") or {}
+  -- Filter merge artifacts from file lists
+  local unstaged = filter_merge_artifacts(status_result.unstaged)
+  local staged = filter_merge_artifacts(status_result.staged)
+  local conflicts = status_result.conflicts and filter_merge_artifacts(status_result.conflicts) or {}
+
+  local unstaged_nodes = create_file_nodes(unstaged, git_root, "unstaged")
+  local staged_nodes = create_file_nodes(staged, git_root, "staged")
+  local conflict_nodes = create_file_nodes(conflicts, git_root, "conflicts")
 
   if base_revision then
     -- Revision mode: single group showing all changes
     return {
       Tree.Node({
-        text = string.format("Changes (%d)", #status_result.unstaged),
+        text = string.format("Changes (%d)", #unstaged),
         data = { type = "group", name = "unstaged" },
       }, unstaged_nodes),
     }
@@ -71,20 +110,20 @@ local function create_tree_data(status_result, git_root, base_revision)
     -- Conflicts first (most important)
     if #conflict_nodes > 0 then
       table.insert(tree_nodes, Tree.Node({
-        text = string.format("Merge Changes (%d)", #conflict_nodes),
+        text = string.format("Merge Changes (%d)", #conflicts),
         data = { type = "group", name = "conflicts" },
       }, conflict_nodes))
     end
     
     -- Unstaged changes
     table.insert(tree_nodes, Tree.Node({
-      text = string.format("Changes (%d)", #status_result.unstaged),
+      text = string.format("Changes (%d)", #unstaged),
       data = { type = "group", name = "unstaged" },
     }, unstaged_nodes))
     
     -- Staged changes
     table.insert(tree_nodes, Tree.Node({
-      text = string.format("Staged Changes (%d)", #status_result.staged),
+      text = string.format("Staged Changes (%d)", #staged),
       data = { type = "group", name = "staged" },
     }, staged_nodes))
     
