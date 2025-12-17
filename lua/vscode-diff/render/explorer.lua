@@ -97,39 +97,38 @@ local function prepare_node(node, max_width, selected_path, selected_group)
     -- File entry - VSCode style: filename (bold) + directory (dimmed) + status (right-aligned)
     local indent = string.rep("  ", node:get_depth() - 1)
     line:append(indent, get_hl("Normal"))
-    
+
     local icon_part = ""
     if data.icon then
       icon_part = data.icon .. " "
       line:append(icon_part, get_hl(data.icon_color))
     end
-    
+
     -- Status symbol at the end (e.g., "M", "D", "??")
     local status_symbol = data.status_symbol or ""
-    
+
     -- Split path into filename and directory
     local full_path = data.path or node.text
     local filename = full_path:match("([^/]+)$") or full_path
     local directory = full_path:sub(1, -(#filename + 1))  -- Remove filename, keep trailing /
-    
+
     -- Calculate how much width we've used and reserve for status
     local used_width = vim.fn.strdisplaywidth(indent) + vim.fn.strdisplaywidth(icon_part)
     local status_reserve = vim.fn.strdisplaywidth(status_symbol) + 2  -- 2 spaces padding before status
     local available_for_content = max_width - used_width - status_reserve
-    
-    -- VSCode shows: filename + directory (dimmed), truncate directory if needed
+
+    -- Show: filename + full directory path, truncate directory from left if needed
     local filename_len = vim.fn.strdisplaywidth(filename)
     local directory_len = vim.fn.strdisplaywidth(directory)
-    local space_len = (directory_len > 0) and 1 or 0  -- Account for space between filename and directory
-    
+    local space_len = (directory_len > 0) and 1 or 0
+
     if filename_len + space_len + directory_len > available_for_content then
-      -- Prioritize showing full filename, truncate directory from end (right)
+      -- Truncate directory from the right (keep the start)
       local available_for_dir = available_for_content - filename_len - space_len
       if available_for_dir > 3 then
-        -- Show truncated directory (from the start, hide the end)
         local ellipsis = "..."
         local chars_to_keep = available_for_dir - vim.fn.strdisplaywidth(ellipsis)
-        
+
         -- Truncate directory by display width, not byte index
         local byte_pos = 0
         local accumulated_width = 0
@@ -146,14 +145,14 @@ local function prepare_node(node, max_width, selected_path, selected_group)
         space_len = 0
       end
     end
-    
-    -- Append filename (normal weight) and directory (dimmed with smaller font)
+
+    -- Append filename (normal weight) and directory (dimmed)
     line:append(filename, get_hl("Normal"))
     if #directory > 0 then
       line:append(" ", get_hl("Normal"))
-      line:append(directory, get_hl("ExplorerDirectorySmall"))  -- Smaller dimmed style
+      line:append(directory, get_hl("ExplorerDirectorySmall"))
     end
-    
+
     -- Add padding to push status symbol to the right edge
     local content_len = vim.fn.strdisplaywidth(filename) + space_len + vim.fn.strdisplaywidth(directory)
     local padding_needed = available_for_content - content_len + 2

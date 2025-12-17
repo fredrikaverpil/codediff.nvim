@@ -101,6 +101,8 @@ https://github.com/user-attachments/assets/64c41f01-dffe-4318-bce4-16eec8de356e
           prev_hunk = "[c",   -- Jump to previous change
           next_file = "]f",   -- Next file in explorer mode
           prev_file = "[f",   -- Previous file in explorer mode
+          diff_get = "do",    -- Get change from other buffer (like vimdiff)
+          diff_put = "dp",    -- Put change to other buffer (like vimdiff)
         },
         explorer = {
           select = "<CR>",    -- Open diff for selected file
