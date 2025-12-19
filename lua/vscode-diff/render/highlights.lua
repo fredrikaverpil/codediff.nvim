@@ -5,6 +5,7 @@ local config = require('vscode-diff.config')
 -- Namespaces for highlights and fillers
 M.ns_highlight = vim.api.nvim_create_namespace("vscode-diff-highlight")
 M.ns_filler = vim.api.nvim_create_namespace("vscode-diff-filler")
+M.ns_conflict = vim.api.nvim_create_namespace("vscode-diff-conflict")
 
 -- Helper function to adjust color brightness
 local function adjust_brightness(color, factor)
@@ -124,6 +125,18 @@ function M.setup()
   -- Explorer indent markers (tree view)
   vim.api.nvim_set_hl(0, "NeoTreeIndentMarker", {
     link = "Comment",
+    default = true,
+  })
+
+  -- Conflict sign in gutter (for merge view) - unresolved conflicts
+  vim.api.nvim_set_hl(0, "CodeDiffConflictSign", {
+    fg = "#f0883e",  -- Orange color for unhandled conflict indicator
+    default = true,
+  })
+
+  -- Conflict sign in gutter (for merge view) - resolved conflicts
+  vim.api.nvim_set_hl(0, "CodeDiffConflictSignResolved", {
+    fg = "#6e7681",  -- Gray color for handled/resolved conflict indicator
     default = true,
   })
 end

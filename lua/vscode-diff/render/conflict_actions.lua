@@ -7,6 +7,7 @@ local config = require('vscode-diff.config')
 local auto_refresh = require('vscode-diff.auto_refresh')
 
 local tracking_ns = vim.api.nvim_create_namespace("vscode-diff-conflict-tracking")
+local result_signs_ns = vim.api.nvim_create_namespace("vscode-diff-result-signs")
 
 -- State for dot-repeat
 local _pending_action = nil
@@ -176,6 +177,123 @@ function M.initialize_tracking(result_bufnr, conflict_blocks)
   end
 end
 
+--- Refresh all conflict signs based on current state (event-driven approach)
+--- Called on TextChanged to keep signs in sync with actual buffer content
+--- Also used for initial sign setup after initialize_tracking
+--- @param session table The diff session
+function M.refresh_all_conflict_signs(session)
+  if not session or not session.conflict_blocks then return end
+  
+  local highlights = require('vscode-diff.render.highlights')
+  local ns_conflict = highlights.ns_conflict
+  
+  -- Helper to set signs for a buffer range
+  local function set_signs_for_range(bufnr, start_line, end_line, namespace, hl_group)
+    if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then return end
+    
+    local line_count = vim.api.nvim_buf_line_count(bufnr)
+    
+    if start_line == end_line then
+      if start_line >= 0 and start_line < line_count then
+        local marks = vim.api.nvim_buf_get_extmarks(bufnr, namespace, {start_line, 0}, {start_line, -1}, {})
+        for _, mark in ipairs(marks) do
+          vim.api.nvim_buf_del_extmark(bufnr, namespace, mark[1])
+        end
+        vim.api.nvim_buf_set_extmark(bufnr, namespace, start_line, 0, {
+          sign_text = "▌",
+          sign_hl_group = hl_group,
+          priority = 50,
+        })
+      end
+    else
+      for line = start_line, end_line - 1 do
+        if line >= 0 and line < line_count then
+          local marks = vim.api.nvim_buf_get_extmarks(bufnr, namespace, {line, 0}, {line, -1}, {})
+          for _, mark in ipairs(marks) do
+            vim.api.nvim_buf_del_extmark(bufnr, namespace, mark[1])
+          end
+          vim.api.nvim_buf_set_extmark(bufnr, namespace, line, 0, {
+            sign_text = "▌",
+            sign_hl_group = hl_group,
+            priority = 50,
+          })
+        end
+      end
+    end
+  end
+  
+  -- Clear result buffer signs (they move with content, so clear and re-add)
+  if session.result_bufnr and vim.api.nvim_buf_is_valid(session.result_bufnr) then
+    vim.api.nvim_buf_clear_namespace(session.result_bufnr, result_signs_ns, 0, -1)
+  end
+  
+  -- Update signs for each block based on is_block_active state
+  for _, block in ipairs(session.conflict_blocks) do
+    local is_active = is_block_active(session, block)
+    local hl_group = is_active and "CodeDiffConflictSign" or "CodeDiffConflictSignResolved"
+    
+    -- Update left buffer (incoming)
+    local left_start = block.output1_range.start_line - 1
+    local left_end = block.output1_range.end_line - 1
+    set_signs_for_range(session.original_bufnr, left_start, left_end, ns_conflict, hl_group)
+    
+    -- Update right buffer (current)
+    local right_start = block.output2_range.start_line - 1
+    local right_end = block.output2_range.end_line - 1
+    set_signs_for_range(session.modified_bufnr, right_start, right_end, ns_conflict, hl_group)
+    
+    -- Update result buffer (use tracked extmark position)
+    if session.result_bufnr and vim.api.nvim_buf_is_valid(session.result_bufnr) and block.extmark_id then
+      local mark = vim.api.nvim_buf_get_extmark_by_id(session.result_bufnr, tracking_ns, block.extmark_id, { details = true })
+      if mark and #mark >= 3 then
+        local result_start = mark[1]
+        local result_end = mark[3].end_row
+        local line_count = vim.api.nvim_buf_line_count(session.result_bufnr)
+        
+        if result_start == result_end then
+          if result_start >= 0 and result_start < line_count then
+            vim.api.nvim_buf_set_extmark(session.result_bufnr, result_signs_ns, result_start, 0, {
+              sign_text = "▌",
+              sign_hl_group = hl_group,
+              priority = 50,
+            })
+          end
+        else
+          for line = result_start, result_end - 1 do
+            if line >= 0 and line < line_count then
+              vim.api.nvim_buf_set_extmark(session.result_bufnr, result_signs_ns, line, 0, {
+                sign_text = "▌",
+                sign_hl_group = hl_group,
+                priority = 50,
+              })
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
+--- Setup autocmd to refresh signs when result buffer changes
+--- @param tabpage number The tabpage ID
+--- @param result_bufnr number The result buffer handle
+function M.setup_sign_refresh_autocmd(tabpage, result_bufnr)
+  if not result_bufnr or not vim.api.nvim_buf_is_valid(result_bufnr) then return end
+  
+  local group = vim.api.nvim_create_augroup("VscodeDiffConflictSigns_" .. tabpage, { clear = true })
+  
+  vim.api.nvim_create_autocmd({"TextChanged", "TextChangedI"}, {
+    group = group,
+    buffer = result_bufnr,
+    callback = function()
+      local session = lifecycle.get_session(tabpage)
+      if session then
+        M.refresh_all_conflict_signs(session)
+      end
+    end,
+  })
+end
+
 --- Apply text to result buffer at the conflict's range
 --- @param result_bufnr number Result buffer
 --- @param block table Conflict block with base_range and optional extmark_id
@@ -289,6 +407,7 @@ function M.accept_incoming(tabpage)
   end
 
   apply_to_result(result_bufnr, block, incoming_lines, base_lines)
+  M.refresh_all_conflict_signs(session)
   auto_refresh.refresh_result_now(result_bufnr)
   return true
 end
@@ -338,6 +457,7 @@ function M.accept_current(tabpage)
   end
 
   apply_to_result(result_bufnr, block, current_lines, base_lines)
+  M.refresh_all_conflict_signs(session)
   auto_refresh.refresh_result_now(result_bufnr)
   return true
 end
@@ -397,6 +517,7 @@ function M.accept_both(tabpage)
   end
 
   apply_to_result(result_bufnr, block, combined, base_lines)
+  M.refresh_all_conflict_signs(session)
   auto_refresh.refresh_result_now(result_bufnr)
   return true
 end
@@ -454,6 +575,7 @@ function M.discard(tabpage)
   end
 
   apply_to_result(result_bufnr, block, base_content, base_lines)
+  M.refresh_all_conflict_signs(session)
   auto_refresh.refresh_result_now(result_bufnr)
   return true
 end
@@ -501,6 +623,7 @@ function M.diffget_incoming(tabpage)
   end
 
   apply_to_result(result_bufnr, block, incoming_lines, base_lines)
+  M.refresh_all_conflict_signs(session)
   auto_refresh.refresh_result_now(result_bufnr)
   return true
 end
@@ -548,6 +671,7 @@ function M.diffget_current(tabpage)
   end
 
   apply_to_result(result_bufnr, block, current_lines, base_lines)
+  M.refresh_all_conflict_signs(session)
   auto_refresh.refresh_result_now(result_bufnr)
   return true
 end
