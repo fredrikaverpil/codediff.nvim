@@ -1,5 +1,5 @@
-local conflict_actions = require('vscode-diff.render.conflict_actions')
-local lifecycle = require('vscode-diff.render.lifecycle')
+local conflict = require('codediff.ui.conflict')
+local lifecycle = require('codediff.ui.lifecycle')
 local assert = require('luassert')
 
 describe("Conflict Actions with Extmark Tracking", function()
@@ -51,7 +51,7 @@ describe("Conflict Actions with Extmark Tracking", function()
     end
     
     -- Initialize tracking
-    conflict_actions.initialize_tracking(result_bufnr, conflict_blocks)
+    conflict.initialize_tracking(result_bufnr, conflict_blocks)
   end)
 
   after_each(function()
@@ -90,7 +90,7 @@ describe("Conflict Actions with Extmark Tracking", function()
     vim.api.nvim_win_set_cursor(0, {1, 0})
     
     -- 3. Execute Action
-    conflict_actions.accept_incoming(tabpage)
+    conflict.accept_incoming(tabpage)
     
     -- 4. Verify Result
     local result_lines = vim.api.nvim_buf_get_lines(result_bufnr, 0, -1, false)
@@ -124,7 +124,7 @@ describe("Conflict Actions with Extmark Tracking", function()
     vim.api.nvim_win_set_cursor(0, {1, 0})
     
     -- First Apply
-    local success1 = conflict_actions.accept_incoming(tabpage)
+    local success1 = conflict.accept_incoming(tabpage)
     assert.is_true(success1)
     
     -- Verify first application
@@ -133,7 +133,7 @@ describe("Conflict Actions with Extmark Tracking", function()
     
     -- Second Apply (should fail or do nothing)
     -- Extmark should be gone now
-    local success2 = conflict_actions.accept_incoming(tabpage)
+    local success2 = conflict.accept_incoming(tabpage)
     assert.is_false(success2)
   end)
 
@@ -152,7 +152,7 @@ describe("Conflict Actions with Extmark Tracking", function()
     vim.api.nvim_win_set_cursor(0, {1, 0})
     
     -- 1. Apply Change
-    local success1 = conflict_actions.accept_incoming(tabpage)
+    local success1 = conflict.accept_incoming(tabpage)
     assert.is_true(success1)
     
     -- 2. Undo in Result Buffer
@@ -165,7 +165,7 @@ describe("Conflict Actions with Extmark Tracking", function()
     
     -- 3. Apply Again (Should succeed because Undo restored Extmark)
     vim.api.nvim_set_current_buf(original_bufnr)
-    local success2 = conflict_actions.accept_incoming(tabpage)
+    local success2 = conflict.accept_incoming(tabpage)
     assert.is_true(success2)
     
     -- Verify content applied again
@@ -185,21 +185,21 @@ describe("Conflict Actions with Extmark Tracking", function()
     vim.api.nvim_win_set_cursor(0, {1, 0})
     
     -- 1. Apply Incoming (Resolves it)
-    local success1 = conflict_actions.accept_incoming(tabpage)
+    local success1 = conflict.accept_incoming(tabpage)
     assert.is_true(success1)
     
     local result_lines = vim.api.nvim_buf_get_lines(result_bufnr, 0, -1, false)
     assert.are.equal("Incoming Content", result_lines[3])
     
     -- 2. Discard (Should work and reset to Base)
-    local success2 = conflict_actions.discard(tabpage)
+    local success2 = conflict.discard(tabpage)
     assert.is_true(success2)
     
     local result_lines_2 = vim.api.nvim_buf_get_lines(result_bufnr, 0, -1, false)
     assert.are.equal("Line 3 (Base Conflict)", result_lines_2[3])
     
     -- 3. Accept Incoming AGAIN (Should work because Discard made it Active again)
-    local success3 = conflict_actions.accept_incoming(tabpage)
+    local success3 = conflict.accept_incoming(tabpage)
     assert.is_true(success3)
     
     local result_lines_3 = vim.api.nvim_buf_get_lines(result_bufnr, 0, -1, false)

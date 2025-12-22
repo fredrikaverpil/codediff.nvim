@@ -2,8 +2,8 @@
 -- Watches buffer changes (internal and external) and triggers diff recomputation
 local M = {}
 
-local diff = require("vscode-diff.diff")
-local core = require("vscode-diff.render.core")
+local diff = require('codediff.core.diff')
+local core = require("codediff.ui.core")
 
 -- Throttle delay in milliseconds
 local THROTTLE_DELAY_MS = 200
@@ -47,7 +47,7 @@ local function do_diff_update(bufnr, skip_watcher_check)
   end
   
   -- Get buffer pair from lifecycle
-  local lifecycle = require('vscode-diff.render.lifecycle')
+  local lifecycle = require('codediff.ui.lifecycle')
   local tabpage = lifecycle.find_tabpage_by_buffer(bufnr)
   if not tabpage then
     if watcher then
@@ -86,7 +86,7 @@ local function do_diff_update(bufnr, skip_watcher_check)
     end
 
     -- Compute diff
-    local config = require("vscode-diff.config")
+    local config = require("codediff.config")
     local diff_options = {
       max_computation_time_ms = config.options.diff.max_computation_time_ms,
     }
@@ -104,7 +104,7 @@ local function do_diff_update(bufnr, skip_watcher_check)
     -- Re-sync scrollbind after filler changes
     -- This ensures all windows stay aligned even if fillers were added/removed
     local original_win, modified_win, result_win = nil, nil, nil
-    local lifecycle = require('vscode-diff.render.lifecycle')
+    local lifecycle = require('codediff.ui.lifecycle')
     local tabpage = vim.api.nvim_get_current_tabpage()
     local _, stored_result_win = lifecycle.get_result(tabpage)
     
@@ -199,7 +199,7 @@ function M.enable(bufnr)
   }
 
   -- Setup autocmds for this buffer
-  local buf_augroup = vim.api.nvim_create_augroup('vscode_diff_auto_refresh_' .. bufnr, { clear = true })
+  local buf_augroup = vim.api.nvim_create_augroup('codediff_auto_refresh_' .. bufnr, { clear = true })
 
   -- Internal changes (user editing)
   vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI', 'TextChangedP' }, {
@@ -235,7 +235,7 @@ function M.disable(bufnr)
   watched_buffers[bufnr] = nil
 
   -- Clear autocmd group
-  pcall(vim.api.nvim_del_augroup_by_name, 'vscode_diff_auto_refresh_' .. bufnr)
+  pcall(vim.api.nvim_del_augroup_by_name, 'codediff_auto_refresh_' .. bufnr)
 end
 
 -- Track result buffer timers only (base_lines stored in lifecycle)
@@ -252,7 +252,7 @@ local function do_result_diff_update(bufnr)
   end
 
   -- Get base_lines from lifecycle
-  local lifecycle = require('vscode-diff.render.lifecycle')
+  local lifecycle = require('codediff.ui.lifecycle')
   local tabpage = lifecycle.find_tabpage_by_buffer(bufnr)
   if not tabpage then
     return
@@ -267,7 +267,7 @@ local function do_result_diff_update(bufnr)
   local result_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
   -- Compute diff: BASE vs result (result shows what was added/changed from BASE)
-  local config = require("vscode-diff.config")
+  local config = require("codediff.config")
   local diff_options = {
     max_computation_time_ms = config.options.diff.max_computation_time_ms,
   }
@@ -305,7 +305,7 @@ function M.enable_for_result(bufnr)
   M.disable_result(bufnr)
 
   -- Setup autocmds for this buffer
-  local buf_augroup = vim.api.nvim_create_augroup('vscode_diff_result_refresh_' .. bufnr, { clear = true })
+  local buf_augroup = vim.api.nvim_create_augroup('codediff_result_refresh_' .. bufnr, { clear = true })
 
   -- Internal changes (user editing)
   vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI', 'TextChangedP' }, {
@@ -339,7 +339,7 @@ function M.disable_result(bufnr)
   end
 
   -- Clear autocmd group
-  pcall(vim.api.nvim_del_augroup_by_name, 'vscode_diff_result_refresh_' .. bufnr)
+  pcall(vim.api.nvim_del_augroup_by_name, 'codediff_result_refresh_' .. bufnr)
 end
 
 -- Immediately refresh result buffer diff (call after programmatic changes)
