@@ -10,6 +10,11 @@ M._set_tree_module = function(t) tree_module = t end
 -- Setup auto-refresh triggers for explorer
 -- Returns a cleanup function that should be called when the explorer is destroyed
 function M.setup_auto_refresh(explorer, tabpage)
+  -- Dir mode: no auto-refresh (static snapshot)
+  if explorer.mode == "dir" then
+    return
+  end
+
   local refresh_timer = nil
   local debounce_ms = 500  -- Wait 500ms after last event
   local git_watcher = nil
@@ -116,6 +121,11 @@ end
 
 -- Refresh explorer with updated git status
 function M.refresh(explorer)
+  -- Dir mode: no refresh (static snapshot)
+  if explorer.mode == "dir" then
+    return
+  end
+
   local git = require('codediff.core.git')
   
   -- Skip refresh if explorer is hidden
@@ -140,7 +150,7 @@ function M.refresh(explorer)
       end
       
       -- Rebuild tree nodes using same structure as create_tree_data
-      local root_nodes = tree_module.create_tree_data(status_result, explorer.git_root, explorer.base_revision)
+      local root_nodes = tree_module.create_tree_data(status_result, explorer.git_root, explorer.base_revision, explorer.mode)
       
       -- Expand all groups
       for _, node in ipairs(root_nodes) do
