@@ -26,7 +26,7 @@ end
 -- Returns a table suitable for nvim_set_hl (e.g., { bg = 0x2ea043 })
 local function resolve_color(value, fallback_gui, fallback_cterm)
   if not value then
-    return { bg = fallback_gui, ctermbg = fallback_cterm }
+    return { bg = fallback_gui, ctermbg = fallback_cterm, default = true }
   end
 
   -- If it's a string, check if it's a hex color or highlight group name
@@ -37,27 +37,36 @@ local function resolve_color(value, fallback_gui, fallback_cterm)
       local r = tonumber(value:sub(2, 3), 16)
       local g = tonumber(value:sub(4, 5), 16)
       local b = tonumber(value:sub(6, 7), 16)
-      return { bg = r * 65536 + g * 256 + b, ctermbg = fallback_cterm }
+      return {
+        bg = r * 65536 + g * 256 + b,
+        ctermbg = fallback_cterm,
+        default = true,
+      }
     elseif value:match("^#%x%x%x$") then
       -- #RGB format - expand to #RRGGBB
       local r = tonumber(value:sub(2, 2), 16) * 17
       local g = tonumber(value:sub(3, 3), 16) * 17
       local b = tonumber(value:sub(4, 4), 16) * 17
-      return { bg = r * 65536 + g * 256 + b, ctermbg = fallback_cterm }
+      return {
+        bg = r * 65536 + g * 256 + b,
+        ctermbg = fallback_cterm,
+        default = true,
+      }
     else
       -- Assume it's a highlight group name
       local hl = vim.api.nvim_get_hl(0, { name = value, link = false })
       return {
         bg = hl.bg or fallback_gui,
         ctermbg = hl.ctermbg or fallback_cterm,
+        default = true
       }
     end
   elseif type(value) == "number" then
     -- Direct color number (e.g., 0x2ea043 or a base256 index)
-    return { bg = value, ctermbg = value }
+    return { bg = value, ctermbg = value, default = true }
   end
 
-  return { bg = fallback_gui, ctermbg = fallback_cterm }
+  return { bg = fallback_gui, ctermbg = fallback_cterm, default = true }
 end
 
 -- Returns the base 256 color palette index of rgb color cube where r, g, b are 0-5 inclusive.
@@ -106,7 +115,8 @@ function M.setup()
     -- Derive from line_delete with brightness adjustment
     char_delete_color = {
       bg = adjust_brightness(line_delete_color.bg, brightness) or 0x4b2a3d,
-      ctermbg = base256_color(2, 0, 0)
+      ctermbg = base256_color(2, 0, 0),
+      default = true
     }
   end
 
