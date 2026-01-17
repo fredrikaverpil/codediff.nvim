@@ -168,6 +168,9 @@ function M.create(commits, git_root, tabpage, width, opts)
     end
     
     if data.files_loaded then
+      -- Files already loaded, just expand
+      commit_node:expand()
+      tree:render()
       if callback then callback() end
       return
     end
