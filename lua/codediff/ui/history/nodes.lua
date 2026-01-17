@@ -31,12 +31,13 @@ end
 function M.create_commit_node(commit, files, git_root)
   local file_nodes = {}
 
-  for _, file in ipairs(files) do
+  for i, file in ipairs(files) do
     local icon, icon_color = M.get_file_icon(file.path)
     local status_info = STATUS_SYMBOLS[file.status] or { symbol = file.status, color = "Normal" }
 
     file_nodes[#file_nodes + 1] = Tree.Node({
       text = file.path,
+      id = "file:" .. commit.hash .. ":" .. file.path,
       data = {
         type = "file",
         path = file.path,
@@ -48,12 +49,14 @@ function M.create_commit_node(commit, files, git_root)
         status_color = status_info.color,
         git_root = git_root,
         commit_hash = commit.hash,
+        is_last = i == #files,
       },
     })
   end
 
   return Tree.Node({
     text = commit.subject,
+    id = "commit:" .. commit.hash,
     data = {
       type = "commit",
       hash = commit.hash,
@@ -69,12 +72,18 @@ function M.create_commit_node(commit, files, git_root)
 end
 
 -- Prepare node for rendering (format display)
+-- Match diffview format: [fold] [file count] | [adds] [dels] | hash subject author, date
 function M.prepare_node(node, max_width, selected_commit, selected_file)
   local line = NuiLine()
   local data = node.data or {}
 
-  if data.type == "commit" then
-    -- Commit node: [icon] short_hash author date_relative subject
+  if data.type == "title" then
+    -- Title node - styled header
+    line:append(data.title, "CodeDiffHistoryTitle")
+
+  elseif data.type == "commit" then
+    -- Commit node format (diffview style):
+    -- [fold icon] N file(s) | +adds -dels | hash subject author, date
     local is_selected = data.hash == selected_commit and not selected_file
     local is_expanded = node:is_expanded()
 
@@ -99,47 +108,59 @@ function M.prepare_node(node, max_width, selected_commit, selected_file)
 
     -- Expand/collapse indicator
     local expand_icon = is_expanded and " " or " "
-    line:append(expand_icon, get_hl("Comment"))
+    line:append(expand_icon, get_hl("NonText"))
 
-    -- Short hash
-    line:append(data.short_hash .. " ", get_hl("Identifier"))
+    -- File count (padded to align)
+    local file_count = data.file_count or data.files_changed or 0
+    local file_word = file_count == 1 and "file " or "files"
+    local files_width = data.max_files_width or 2
+    local file_str = string.format("%" .. files_width .. "d %s ", file_count, file_word)
+    line:append(file_str, get_hl("NonText"))
 
-    -- Author (dimmed)
-    local author_display = data.author
-    if #author_display > 15 then
-      author_display = author_display:sub(1, 14) .. "…"
+    -- Stats with pipe separators: | <ins> <del> |
+    -- One space after |, numbers left-aligned to max width, one space between, one before |
+    local insertions = data.insertions or 0
+    local deletions = data.deletions or 0
+    local ins_width = data.max_ins_width or #tostring(insertions)
+    local del_width = data.max_del_width or #tostring(deletions)
+    
+    local ins_str = string.format("%-" .. ins_width .. "d", insertions)
+    local del_str = string.format("%-" .. del_width .. "d", deletions)
+    
+    line:append("| ", get_hl("NonText"))
+    line:append(ins_str, get_hl("DiagnosticOk"))
+    line:append(" ")
+    line:append(del_str, get_hl("DiagnosticError"))
+    line:append(" | ", get_hl("NonText"))
+
+    -- Short hash (8 chars like diffview)
+    local hash_display = data.short_hash
+    if #hash_display < 8 and data.hash then
+      hash_display = data.hash:sub(1, 8)
     end
-    line:append(author_display .. " ", get_hl("Comment"))
+    line:append(hash_display, get_hl("Identifier"))
 
-    -- Date relative (dimmed)
-    line:append(data.date_relative .. " ", get_hl("Comment"))
+    -- Ref names (branches, tags) if present
+    if data.ref_names and data.ref_names ~= "" then
+      line:append(" (" .. data.ref_names .. ")", get_hl("String"))
+    end
 
-    -- Subject (main text)
-    local used_width = vim.fn.strdisplaywidth(expand_icon)
-      + vim.fn.strdisplaywidth(data.short_hash) + 1
-      + vim.fn.strdisplaywidth(author_display) + 1
-      + vim.fn.strdisplaywidth(data.date_relative) + 1
-
-    local available_for_subject = max_width - used_width - 2
+    -- Subject (main text, truncated to 72 chars like diffview)
     local subject = data.subject
-    if vim.fn.strdisplaywidth(subject) > available_for_subject then
-      -- Truncate subject
-      local truncated = ""
-      local width = 0
-      for char in vim.gsplit(subject, "") do
-        local char_width = vim.fn.strdisplaywidth(char)
-        if width + char_width + 1 > available_for_subject then
-          break
-        end
-        truncated = truncated .. char
-        width = width + char_width
-      end
-      subject = truncated .. "…"
+    if #subject > 72 then
+      subject = subject:sub(1, 71) .. "…"
     end
-    line:append(subject, get_hl("Normal"))
+    if subject == "" then
+      subject = "[empty message]"
+    end
+    line:append(" " .. subject, get_hl("Normal"))
+
+    -- Author, date at end (dimmed)
+    line:append(" " .. data.author .. ", " .. data.date_relative, get_hl("Comment"))
 
   elseif data.type == "file" then
-    -- File node: indented with icon, filename, status
+    -- File node format (diffview style):
+    -- [tree char] [status] [icon] [path/]filename
     local is_selected = data.commit_hash == selected_commit and data.path == selected_file
 
     local selected_bg = nil
@@ -160,42 +181,38 @@ function M.prepare_node(node, max_width, selected_commit, selected_file)
       return combined_name
     end
 
-    -- Indent
-    line:append("    ", get_hl("Normal"))
+    -- Tree line character (diffview uses └ for last, │ for others)
+    local tree_char = data.is_last and "└   " or "│   "
+    line:append(tree_char, get_hl("Comment"))
+
+    -- Status symbol
+    line:append(data.status_symbol .. " ", get_hl(data.status_color))
 
     -- File icon
     if data.icon then
       line:append(data.icon .. " ", get_hl(data.icon_color))
     end
 
-    -- Split path into filename and directory
+    -- Split path into directory and filename
     local full_path = data.path
     local filename = full_path:match("([^/]+)$") or full_path
-    local directory = full_path:sub(1, -(#filename + 1))
+    local directory = full_path:sub(1, -(#filename + 2))
+
+    -- Directory path (dimmed)
+    if #directory > 0 then
+      line:append(directory .. "/", get_hl("Comment"))
+    end
 
     -- Filename
     line:append(filename, get_hl("Normal"))
 
-    -- Directory (dimmed)
-    if #directory > 0 then
-      line:append(" ", get_hl("Normal"))
-      line:append(directory, get_hl("Comment"))
+    -- Pad with spaces to fill full line width when selected
+    if is_selected and max_width then
+      local current_len = #line:content()
+      if current_len < max_width then
+        line:append(string.rep(" ", max_width - current_len), get_hl("Normal"))
+      end
     end
-
-    -- Calculate padding for right-aligned status
-    local used_width = 4 -- indent
-      + (data.icon and (vim.fn.strdisplaywidth(data.icon) + 1) or 0)
-      + vim.fn.strdisplaywidth(filename)
-      + (#directory > 0 and (1 + vim.fn.strdisplaywidth(directory)) or 0)
-
-    local status_width = vim.fn.strdisplaywidth(data.status_symbol) + 2
-    local padding = max_width - used_width - status_width
-    if padding > 0 then
-      line:append(string.rep(" ", padding), get_hl("Normal"))
-    end
-
-    -- Status symbol
-    line:append(data.status_symbol .. " ", get_hl(data.status_color))
   end
 
   return line

@@ -56,12 +56,48 @@ function M.create(commits, git_root, tabpage, width, opts)
   local selected_commit = nil
   local selected_file = nil
 
+  -- Calculate max widths for alignment
+  local max_files = 0
+  local max_insertions = 0
+  local max_deletions = 0
+  for _, commit in ipairs(commits) do
+    if commit.files_changed > max_files then max_files = commit.files_changed end
+    if commit.insertions > max_insertions then max_insertions = commit.insertions end
+    if commit.deletions > max_deletions then max_deletions = commit.deletions end
+  end
+  local max_files_width = #tostring(max_files)
+  local max_ins_width = #tostring(max_insertions)
+  local max_del_width = #tostring(max_deletions)
+
   -- Build initial tree with commit nodes (files will be loaded on expand)
   local tree_nodes = {}
+  local first_commit_node = nil  -- Track first commit for auto-expand
+
+  -- Build title based on context
+  local title_text
+  if opts.file_path and opts.file_path ~= "" then
+    local filename = opts.file_path:match("([^/]+)$") or opts.file_path
+    title_text = "File History: " .. filename .. " (" .. #commits .. ")"
+  elseif opts.range and opts.range ~= "" then
+    title_text = "Commit History: " .. opts.range .. " (" .. #commits .. ")"
+  else
+    title_text = "Commit History (" .. #commits .. ")"
+  end
+
+  -- Add title node
+  tree_nodes[#tree_nodes + 1] = Tree.Node({
+    id = "title",
+    text = title_text,
+    data = {
+      type = "title",
+      title = title_text,
+    },
+  })
+
   for _, commit in ipairs(commits) do
     -- Create placeholder commit node - files loaded on expand
     -- Use commit hash as unique ID to avoid duplicate ID errors when subjects match
-    tree_nodes[#tree_nodes + 1] = Tree.Node({
+    local commit_node = Tree.Node({
       id = "commit:" .. commit.hash,
       text = commit.subject,
       data = {
@@ -72,11 +108,24 @@ function M.create(commits, git_root, tabpage, width, opts)
         date = commit.date,
         date_relative = commit.date_relative,
         subject = commit.subject,
-        file_count = nil, -- Unknown until expanded
+        ref_names = commit.ref_names,
+        files_changed = commit.files_changed,
+        insertions = commit.insertions,
+        deletions = commit.deletions,
+        file_count = commit.files_changed, -- Use files_changed as initial count
         git_root = git_root,
         files_loaded = false,
+        -- Alignment info
+        max_files_width = max_files_width,
+        max_ins_width = max_ins_width,
+        max_del_width = max_del_width,
       },
     })
+    tree_nodes[#tree_nodes + 1] = commit_node
+    -- Track first commit for auto-expand
+    if not first_commit_node then
+      first_commit_node = commit_node
+    end
   end
 
   local tree = Tree({
@@ -111,6 +160,13 @@ function M.create(commits, git_root, tabpage, width, opts)
   -- Load files for a commit and update its children
   local function load_commit_files(commit_node, callback)
     local data = commit_node.data
+    
+    -- Skip non-commit nodes (e.g., title node)
+    if not data or data.type ~= "commit" then
+      if callback then callback() end
+      return
+    end
+    
     if data.files_loaded then
       if callback then callback() end
       return
@@ -128,7 +184,7 @@ function M.create(commits, git_root, tabpage, width, opts)
         -- Create file nodes
         -- Use commit_hash:path as unique ID to avoid duplicates across commits
         local file_nodes = {}
-        for _, file in ipairs(files) do
+        for i, file in ipairs(files) do
           local icon, icon_color = nodes_module.get_file_icon(file.path)
           local STATUS_SYMBOLS = {
             M = { symbol = "M", color = "DiagnosticWarn" },
@@ -152,6 +208,7 @@ function M.create(commits, git_root, tabpage, width, opts)
               status_color = status_info.color,
               git_root = git_root,
               commit_hash = data.hash,
+              is_last = i == #files,
             },
           })
         end
@@ -272,23 +329,20 @@ function M.create(commits, git_root, tabpage, width, opts)
   end
 
   -- Auto-expand first commit and select first file
-  if #tree_nodes > 0 then
+  if first_commit_node then
     vim.defer_fn(function()
-      local first_commit = tree_nodes[1]
-      if first_commit then
-        load_commit_files(first_commit, function()
-          -- Select first file after loading
-          if first_commit:has_children() then
-            local child_ids = first_commit:get_child_ids()
-            if #child_ids > 0 then
-              local first_file = tree:get_node(child_ids[1])
-              if first_file and first_file.data then
-                history.on_file_select(first_file.data)
-              end
+      load_commit_files(first_commit_node, function()
+        -- Select first file after loading
+        if first_commit_node:has_children() then
+          local child_ids = first_commit_node:get_child_ids()
+          if #child_ids > 0 then
+            local first_file = tree:get_node(child_ids[1])
+            if first_file and first_file.data then
+              history.on_file_select(first_file.data)
             end
           end
-        end)
-      end
+        end
+      end)
     end, 100)
   end
 

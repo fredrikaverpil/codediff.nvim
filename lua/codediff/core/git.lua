@@ -607,12 +607,13 @@ end
 --   no_merges: exclude merge commits
 --   reverse: reverse order (oldest first)
 -- callback: function(err, commits) where commits is array of:
---   { hash, short_hash, author, date, date_relative, subject }
+--   { hash, short_hash, author, date, date_relative, subject, ref_names, files_changed, insertions, deletions }
 function M.get_commit_list(range, git_root, opts, callback)
   opts = opts or {}
   local args = {
     "log",
-    "--pretty=format:%H%x00%h%x00%an%x00%at%x00%ar%x00%s",
+    "--pretty=format:%H%x00%h%x00%an%x00%at%x00%ar%x00%s%x00%D%x00",
+    "--shortstat",
   }
 
   if opts.no_merges then
@@ -644,18 +645,45 @@ function M.get_commit_list(range, git_root, opts, callback)
     end
 
     local commits = {}
+    local current_commit = nil
+
     for line in output:gmatch("[^\n]+") do
-      local parts = vim.split(line, "\0")
-      if #parts >= 6 then
-        table.insert(commits, {
-          hash = parts[1],
-          short_hash = parts[2],
-          author = parts[3],
-          date = tonumber(parts[4]),
-          date_relative = parts[5],
-          subject = parts[6],
-        })
+      -- Check if this is a commit line (contains null separators)
+      if line:find("\0") then
+        -- Save previous commit if exists
+        if current_commit then
+          table.insert(commits, current_commit)
+        end
+
+        local parts = vim.split(line, "\0")
+        if #parts >= 7 then
+          current_commit = {
+            hash = parts[1],
+            short_hash = parts[2],
+            author = parts[3],
+            date = tonumber(parts[4]),
+            date_relative = parts[5],
+            subject = parts[6],
+            ref_names = parts[7] ~= "" and parts[7] or nil,
+            files_changed = 0,
+            insertions = 0,
+            deletions = 0,
+          }
+        end
+      elseif current_commit and line:match("%d+ file") then
+        -- Parse shortstat line: " 3 files changed, 32 insertions(+), 8 deletions(-)"
+        local files = line:match("(%d+) file")
+        local ins = line:match("(%d+) insertion")
+        local del = line:match("(%d+) deletion")
+        current_commit.files_changed = tonumber(files) or 0
+        current_commit.insertions = tonumber(ins) or 0
+        current_commit.deletions = tonumber(del) or 0
       end
+    end
+
+    -- Don't forget the last commit
+    if current_commit then
+      table.insert(commits, current_commit)
     end
 
     callback(nil, commits)
