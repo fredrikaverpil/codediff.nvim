@@ -43,6 +43,7 @@ M.defaults = {
     height = 15, -- Height when position is "bottom" (lines)
     view_mode = "list", -- "list" (flat file list) or "tree" (directory tree)
     indent_markers = true, -- Show indent markers in tree view (│, ├, └)
+    initial_focus = "explorer", -- Initial focus: "explorer", "original", or "modified"
     icons = {
       folder_closed = "\u{e5ff}", -- Nerd Font: folder
       folder_open = "\u{e5fe}", -- Nerd Font: folder-open
@@ -57,6 +58,7 @@ M.defaults = {
     position = "bottom", -- "left" or "bottom" (default: bottom)
     width = 40, -- Width when position is "left" (columns)
     height = 15, -- Height when position is "bottom" (lines)
+    initial_focus = "history", -- Initial focus: "history", "original", or "modified"
   },
 
   -- Keymaps

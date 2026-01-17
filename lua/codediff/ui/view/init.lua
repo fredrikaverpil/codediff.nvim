@@ -356,6 +356,16 @@ function M.create(session_config, filetype, on_ready)
     -- Store explorer reference in lifecycle
     lifecycle.set_explorer(tabpage, explorer_obj)
 
+    -- Set initial focus based on config
+    local initial_focus = explorer_config.initial_focus or "explorer"
+    if initial_focus == "explorer" and explorer_obj and explorer_obj.winid and vim.api.nvim_win_is_valid(explorer_obj.winid) then
+      vim.api.nvim_set_current_win(explorer_obj.winid)
+    elseif initial_focus == "original" and vim.api.nvim_win_is_valid(original_win) then
+      vim.api.nvim_set_current_win(original_win)
+    elseif initial_focus == "modified" and vim.api.nvim_win_is_valid(modified_win) then
+      vim.api.nvim_set_current_win(modified_win)
+    end
+
     -- Note: Keymaps will be set when first file is selected via update()
 
     -- Adjust diff window sizes based on explorer position
@@ -390,6 +400,16 @@ function M.create(session_config, filetype, on_ready)
     -- Store history panel reference in lifecycle (reuse explorer slot)
     lifecycle.set_explorer(tabpage, history_obj)
 
+    -- Set initial focus based on config
+    local initial_focus = history_config.initial_focus or "history"
+    if initial_focus == "history" and history_obj and history_obj.winid and vim.api.nvim_win_is_valid(history_obj.winid) then
+      vim.api.nvim_set_current_win(history_obj.winid)
+    elseif initial_focus == "original" and vim.api.nvim_win_is_valid(original_win) then
+      vim.api.nvim_set_current_win(original_win)
+    elseif initial_focus == "modified" and vim.api.nvim_win_is_valid(modified_win) then
+      vim.api.nvim_set_current_win(modified_win)
+    end
+
     -- Adjust diff window sizes based on panel position
     if position == "bottom" then
       vim.cmd("wincmd =")
@@ -418,6 +438,9 @@ end
 ---@param auto_scroll_to_first_hunk boolean? Whether to auto-scroll to first hunk (default: false)
 ---@return boolean success Whether update succeeded
 function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
+  -- Save current window to restore focus after update
+  local saved_current_win = vim.api.nvim_get_current_win()
+
   -- Get existing session
   local session = lifecycle.get_session(tabpage)
   if not session then
@@ -556,6 +579,11 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
         -- Setup all keymaps in one place (centralized)
         local is_explorer_mode = session.mode == "explorer"
         setup_all_keymaps(tabpage, original_info.bufnr, modified_info.bufnr, is_explorer_mode)
+
+        -- Restore focus to the window that was active before update
+        if saved_current_win and vim.api.nvim_win_is_valid(saved_current_win) then
+          vim.api.nvim_set_current_win(saved_current_win)
+        end
       end
     end
   end

@@ -100,6 +100,7 @@ https://github.com/user-attachments/assets/64c41f01-dffe-4318-bce4-16eec8de356e
         width = 40,         -- Width when position is "left" (columns)
         height = 15,        -- Height when position is "bottom" (lines)
         indent_markers = true,  -- Show indent markers in tree view (│, ├, └)
+        initial_focus = "explorer",  -- Initial focus: "explorer", "original", or "modified"
         icons = {
           folder_closed = "",  -- Nerd Font folder icon (customize as needed)
           folder_open = "",    -- Nerd Font folder-open icon
@@ -115,6 +116,7 @@ https://github.com/user-attachments/assets/64c41f01-dffe-4318-bce4-16eec8de356e
         position = "bottom",  -- "left" or "bottom" (default: bottom)
         width = 40,           -- Width when position is "left" (columns)
         height = 15,          -- Height when position is "bottom" (lines)
+        initial_focus = "history",  -- Initial focus: "history", "original", or "modified"
       },
 
       -- Keymaps in diff view
