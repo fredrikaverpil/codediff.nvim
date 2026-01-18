@@ -80,7 +80,6 @@ function M.prepare_node(node, max_width, selected_commit, selected_file)
   if data.type == "title" then
     -- Title node - styled header
     line:append(data.title, "CodeDiffHistoryTitle")
-
   elseif data.type == "commit" then
     -- Commit node format (diffview style):
     -- [fold icon] N file(s) | +adds -dels | hash subject author, date
@@ -125,10 +124,10 @@ function M.prepare_node(node, max_width, selected_commit, selected_file)
     local deletions = data.deletions or 0
     local ins_width = data.max_ins_width or #tostring(insertions)
     local del_width = data.max_del_width or #tostring(deletions)
-    
+
     local ins_str = string.format("%-" .. ins_width .. "d", insertions)
     local del_str = string.format("%-" .. del_width .. "d", deletions)
-    
+
     line:append("| ", get_hl("NonText"))
     line:append(ins_str, get_hl("DiagnosticOk"))
     line:append(" ")
@@ -159,7 +158,6 @@ function M.prepare_node(node, max_width, selected_commit, selected_file)
 
     -- Author, date at end (dimmed)
     line:append(" " .. data.author .. ", " .. data.date_relative, get_hl("Comment"))
-
   elseif data.type == "file" then
     -- File node format (diffview style):
     -- [tree char] [status] [icon] [path/]filename

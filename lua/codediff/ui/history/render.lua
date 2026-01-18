@@ -64,9 +64,15 @@ function M.create(commits, git_root, tabpage, width, opts)
   local max_insertions = 0
   local max_deletions = 0
   for _, commit in ipairs(commits) do
-    if commit.files_changed > max_files then max_files = commit.files_changed end
-    if commit.insertions > max_insertions then max_insertions = commit.insertions end
-    if commit.deletions > max_deletions then max_deletions = commit.deletions end
+    if commit.files_changed > max_files then
+      max_files = commit.files_changed
+    end
+    if commit.insertions > max_insertions then
+      max_insertions = commit.insertions
+    end
+    if commit.deletions > max_deletions then
+      max_deletions = commit.deletions
+    end
   end
   local max_files_width = #tostring(max_files)
   local max_ins_width = #tostring(max_insertions)
@@ -74,7 +80,7 @@ function M.create(commits, git_root, tabpage, width, opts)
 
   -- Build initial tree with commit nodes (files will be loaded on expand)
   local tree_nodes = {}
-  local first_commit_node = nil  -- Track first commit for auto-expand
+  local first_commit_node = nil -- Track first commit for auto-expand
 
   -- Build title based on context
   local title_text
@@ -166,18 +172,22 @@ function M.create(commits, git_root, tabpage, width, opts)
   -- Load files for a commit and update its children
   local function load_commit_files(commit_node, callback)
     local data = commit_node.data
-    
+
     -- Skip non-commit nodes (e.g., title node)
     if not data or data.type ~= "commit" then
-      if callback then callback() end
+      if callback then
+        callback()
+      end
       return
     end
-    
+
     if data.files_loaded then
       -- Files already loaded, just expand
       commit_node:expand()
       tree:render()
-      if callback then callback() end
+      if callback then
+        callback()
+      end
       return
     end
 
@@ -235,7 +245,9 @@ function M.create(commits, git_root, tabpage, width, opts)
         commit_node:expand()
         tree:render()
 
-        if callback then callback() end
+        if callback then
+          callback()
+        end
       end)
     end)
   end

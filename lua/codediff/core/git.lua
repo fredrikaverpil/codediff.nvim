@@ -611,7 +611,7 @@ end
 function M.get_commit_list(range, git_root, opts, callback)
   opts = opts or {}
   local is_single_file = opts.path and opts.path ~= ""
-  
+
   local args = {
     "log",
     "--pretty=format:%H%x00%h%x00%an%x00%at%x00%ar%x00%s%x00%D%x00",
@@ -733,40 +733,36 @@ end
 -- callback: function(err, files) where files is array of:
 --   { path, status, old_path }
 function M.get_commit_files(commit_hash, git_root, callback)
-  run_git_async(
-    { "diff-tree", "--no-commit-id", "--name-status", "-r", "-M", commit_hash },
-    { cwd = git_root },
-    function(err, output)
-      if err then
-        callback(err, nil)
-        return
-      end
-
-      local files = {}
-      for line in output:gmatch("[^\n]+") do
-        local parts = vim.split(line, "\t")
-        if #parts >= 2 then
-          local status = parts[1]:sub(1, 1)
-          local path = parts[2]
-          local old_path = nil
-
-          -- Handle renames (R100 or similar)
-          if status == "R" and #parts >= 3 then
-            old_path = parts[2]
-            path = parts[3]
-          end
-
-          table.insert(files, {
-            path = path,
-            status = status,
-            old_path = old_path,
-          })
-        end
-      end
-
-      callback(nil, files)
+  run_git_async({ "diff-tree", "--no-commit-id", "--name-status", "-r", "-M", commit_hash }, { cwd = git_root }, function(err, output)
+    if err then
+      callback(err, nil)
+      return
     end
-  )
+
+    local files = {}
+    for line in output:gmatch("[^\n]+") do
+      local parts = vim.split(line, "\t")
+      if #parts >= 2 then
+        local status = parts[1]:sub(1, 1)
+        local path = parts[2]
+        local old_path = nil
+
+        -- Handle renames (R100 or similar)
+        if status == "R" and #parts >= 3 then
+          old_path = parts[2]
+          path = parts[3]
+        end
+
+        table.insert(files, {
+          path = path,
+          status = status,
+          old_path = old_path,
+        })
+      end
+    end
+
+    callback(nil, files)
+  end)
 end
 
 -- Get revision candidates for command completion (sync)
