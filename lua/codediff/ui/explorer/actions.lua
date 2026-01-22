@@ -257,15 +257,20 @@ function M.toggle_stage_entry(explorer, tree)
   end
 
   local entry_type = node.data.type
-  local path = node.data.path
   local group = node.data.group
 
   if entry_type == "directory" then
-    -- Stage/unstage entire directory
-    toggle_stage_directory(explorer.git_root, path, group)
+    -- Directory uses dir_path, not path
+    local dir_path = node.data.dir_path
+    if dir_path then
+      toggle_stage_directory(explorer.git_root, dir_path, group)
+    end
   else
-    -- Stage/unstage single file
-    M.toggle_stage_file(explorer.git_root, path, group)
+    -- File uses path
+    local path = node.data.path
+    if path then
+      M.toggle_stage_file(explorer.git_root, path, group)
+    end
   end
 end
 
