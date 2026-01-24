@@ -1,0 +1,53 @@
+name: "Copilot Setup Steps"
+
+# Automatically run when this file changes for validation,
+# and allow manual testing via the Actions tab
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  # The job MUST be called `copilot-setup-steps` for Copilot to recognize it
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+
+      - name: Setup Neovim
+        uses: ./.github/actions/setup-neovim
+
+      - name: Install plugin dependencies (plenary.nvim, nui.nvim)
+        run: |
+          mkdir -p ~/.local/share/nvim/site/pack/vendor/start
+          git clone --depth 1 https://github.com/nvim-lua/plenary.nvim ~/.local/share/nvim/site/pack/vendor/start/plenary.nvim
+          git clone --depth 1 https://github.com/MunifTanjim/nui.nvim ~/.local/share/nvim/site/pack/vendor/start/nui.nvim
+
+      - name: Build native library
+        run: make build
+
+      - name: Verify Neovim can load the plugin
+        run: |
+          nvim --headless -u tests/init.lua -c "lua print('codediff version: ' .. require('codediff.version').VERSION)" -c "qa!"
+
+      - name: Run tests to verify environment
+        run: ./tests/run_plenary_tests.sh
