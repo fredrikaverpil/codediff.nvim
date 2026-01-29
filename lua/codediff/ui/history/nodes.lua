@@ -216,7 +216,7 @@ end
 
 -- Prepare node for rendering (format display)
 -- Match diffview format: [fold] [file count] | [adds] [dels] | hash subject author, date
-function M.prepare_node(node, max_width, selected_commit, selected_file)
+function M.prepare_node(node, max_width, selected_commit, selected_file, is_single_file_mode)
   local line = NuiLine()
   local data = node.data or {}
 
@@ -226,7 +226,9 @@ function M.prepare_node(node, max_width, selected_commit, selected_file)
   elseif data.type == "commit" then
     -- Commit node format (diffview style):
     -- [fold icon] N file(s) | +adds -dels | hash subject author, date
-    local is_selected = data.hash == selected_commit and not selected_file
+    -- In single-file mode, highlight commit when hash matches (no file nodes exist)
+    -- In multi-file mode, highlight commit only when no file is selected
+    local is_selected = data.hash == selected_commit and (is_single_file_mode or not selected_file)
     local is_expanded = node:is_expanded()
 
     -- Get selected background color once
