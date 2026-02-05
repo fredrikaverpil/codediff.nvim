@@ -58,11 +58,15 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
       end
     end
 
-    -- Wrap around to first hunk
-    local first_hunk = diff_result.changes[1]
-    local target_line = is_original and first_hunk.original.start_line or first_hunk.modified.start_line
-    pcall(vim.api.nvim_win_set_cursor, 0, { target_line, 0 })
-    vim.api.nvim_echo({ { string.format("Hunk 1 of %d", #diff_result.changes), "None" } }, false, {})
+    -- Wrap around to first hunk (if cycling enabled)
+    if config.options.diff.cycle_next_hunk then
+      local first_hunk = diff_result.changes[1]
+      local target_line = is_original and first_hunk.original.start_line or first_hunk.modified.start_line
+      pcall(vim.api.nvim_win_set_cursor, 0, { target_line, 0 })
+      vim.api.nvim_echo({ { string.format("Hunk 1 of %d", #diff_result.changes), "None" } }, false, {})
+    else
+      vim.api.nvim_echo({ { string.format("Last hunk (%d of %d)", #diff_result.changes, #diff_result.changes), "WarningMsg" } }, false, {})
+    end
   end
 
   -- Helper: Navigate to previous hunk
@@ -110,11 +114,15 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
       end
     end
 
-    -- Wrap around to last hunk
-    local last_hunk = diff_result.changes[#diff_result.changes]
-    local target_line = is_original and last_hunk.original.start_line or last_hunk.modified.start_line
-    pcall(vim.api.nvim_win_set_cursor, 0, { target_line, 0 })
-    vim.api.nvim_echo({ { string.format("Hunk %d of %d", #diff_result.changes, #diff_result.changes), "None" } }, false, {})
+    -- Wrap around to last hunk (if cycling enabled)
+    if config.options.diff.cycle_next_hunk then
+      local last_hunk = diff_result.changes[#diff_result.changes]
+      local target_line = is_original and last_hunk.original.start_line or last_hunk.modified.start_line
+      pcall(vim.api.nvim_win_set_cursor, 0, { target_line, 0 })
+      vim.api.nvim_echo({ { string.format("Hunk %d of %d", #diff_result.changes, #diff_result.changes), "None" } }, false, {})
+    else
+      vim.api.nvim_echo({ { string.format("First hunk (1 of %d)", #diff_result.changes), "WarningMsg" } }, false, {})
+    end
   end
 
   -- Helper: Navigate to next file (works in both explorer and history mode)
