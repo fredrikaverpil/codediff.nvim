@@ -414,24 +414,31 @@ function M.set_tab_keymap(tabpage, mode, lhs, rhs, opts)
     return false
   end
 
+  -- Track all buffers that have keymaps set (for cleanup on close)
+  sess.keymap_buffers = sess.keymap_buffers or {}
+
   opts = opts or {}
   local base_opts = { noremap = true, silent = true, nowait = true }
 
   if vim.api.nvim_buf_is_valid(sess.original_bufnr) then
     vim.keymap.set(mode, lhs, rhs, vim.tbl_extend("force", base_opts, opts, { buffer = sess.original_bufnr }))
+    sess.keymap_buffers[sess.original_bufnr] = true
   end
 
   if vim.api.nvim_buf_is_valid(sess.modified_bufnr) then
     vim.keymap.set(mode, lhs, rhs, vim.tbl_extend("force", base_opts, opts, { buffer = sess.modified_bufnr }))
+    sess.keymap_buffers[sess.modified_bufnr] = true
   end
 
   local explorer = sess.explorer
   if explorer and explorer.bufnr and vim.api.nvim_buf_is_valid(explorer.bufnr) then
     vim.keymap.set(mode, lhs, rhs, vim.tbl_extend("force", base_opts, opts, { buffer = explorer.bufnr }))
+    sess.keymap_buffers[explorer.bufnr] = true
   end
 
   if sess.result_bufnr and vim.api.nvim_buf_is_valid(sess.result_bufnr) then
     vim.keymap.set(mode, lhs, rhs, vim.tbl_extend("force", base_opts, opts, { buffer = sess.result_bufnr }))
+    sess.keymap_buffers[sess.result_bufnr] = true
   end
 
   return true
@@ -456,17 +463,19 @@ function M.clear_tab_keymaps(tabpage)
     end
   end
 
-  del_buf_keymaps(sess.original_bufnr, config.options.keymaps.view)
-  del_buf_keymaps(sess.modified_bufnr, config.options.keymaps.view)
+  -- Delete keymaps from ALL buffers that ever had them set (not just current ones)
+  if sess.keymap_buffers then
+    for bufnr, _ in pairs(sess.keymap_buffers) do
+      del_buf_keymaps(bufnr, config.options.keymaps.view)
+    end
+  end
 
+  -- Also handle explorer keymaps separately (explorer buffer uses both view and explorer keymaps)
   if sess.explorer and sess.explorer.bufnr then
-    del_buf_keymaps(sess.explorer.bufnr, config.options.keymaps.view)
     del_buf_keymaps(sess.explorer.bufnr, config.options.keymaps.explorer or {})
   end
 
-  if sess.result_bufnr then
-    del_buf_keymaps(sess.result_bufnr, config.options.keymaps.view)
-  end
+  sess.keymap_buffers = nil
 end
 
 --- Setup auto-sync on file switch: automatically update diff when user edits a different file in working buffer
