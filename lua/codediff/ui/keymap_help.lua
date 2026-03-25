@@ -62,6 +62,7 @@ local function build_sections(keymaps, is_explorer, is_history, is_conflict)
     table.insert(view_items, { km.discard_hunk, "Discard hunk under cursor" })
   end
   table.insert(view_items, { km.toggle_layout, "Toggle inline/side-by-side layout" })
+  table.insert(view_items, { km.toggle_compact, "Toggle compact mode (fold unchanged)" })
   if km.align_move then
     table.insert(view_items, { km.align_move, "Align moved code block" })
   end
