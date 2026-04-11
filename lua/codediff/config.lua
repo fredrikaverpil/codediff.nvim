@@ -49,6 +49,7 @@ M.defaults = {
   -- Explorer panel configuration
   explorer = {
     position = "left", -- "left" or "bottom"
+    hidden = false,
     width = 40, -- Width when position is "left" (columns)
     height = 15, -- Height when position is "bottom" (lines)
     view_mode = "list", -- "list" (flat file list) or "tree" (directory tree)

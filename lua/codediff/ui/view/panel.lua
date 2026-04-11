@@ -36,6 +36,10 @@ function M.setup_explorer(tabpage, session_config, original_win, modified_win)
   local explorer_obj =
     explorer_module.create(status_result, session_config.git_root, tabpage, nil, session_config.original_revision, session_config.modified_revision, explorer_opts)
 
+  if explorer_config.hidden == true then
+    vim.api.nvim_win_close(explorer_obj.winid, true)
+  end
+
   lifecycle.set_explorer(tabpage, explorer_obj)
 
   local initial_focus = explorer_config.initial_focus or "explorer"

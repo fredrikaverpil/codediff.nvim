@@ -175,7 +175,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
     current_file_path = nil, -- Track currently selected file
     current_file_group = nil, -- Track currently selected file's group (staged/unstaged)
     current_selection = nil, -- Full file selection used to replay current state
-    is_hidden = false, -- Track visibility state
+    is_hidden = explorer_config.hidden, -- Track visibility state
     visible_groups = vim.deepcopy(explorer_config.visible_groups or { staged = true, unstaged = true, conflicts = true }),
   }
 
