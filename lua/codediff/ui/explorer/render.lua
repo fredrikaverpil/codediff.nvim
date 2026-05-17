@@ -98,6 +98,14 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
   split:mount()
   pcall(vim.api.nvim_buf_set_name, split.bufnr, "CodeDiff Explorer [" .. tabpage .. "]")
 
+  -- Honor the initial-visibility config: hide the split immediately if requested.
+  -- toggle_explorer (actions.lua) uses split:hide/show to flip this at runtime;
+  -- using split:hide() here matches that lifecycle so the user's toggle keymap
+  -- continues to work correctly.
+  if explorer_config.hidden then
+    split:hide()
+  end
+
   -- Track selected path and group for highlighting
   local selected_path = nil
   local selected_group = nil
@@ -553,7 +561,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
   if initial_file then
     vim.schedule(function()
       -- Scroll explorer to the selected file using tree:get_node(line) lookup
-      if vim.api.nvim_win_is_valid(explorer.winid) and vim.api.nvim_buf_is_valid(explorer.bufnr) then
+      if explorer.winid and vim.api.nvim_win_is_valid(explorer.winid) and vim.api.nvim_buf_is_valid(explorer.bufnr) then
         local line_count = vim.api.nvim_buf_line_count(explorer.bufnr)
         for line = 1, line_count do
           local node = explorer.tree:get_node(line)
