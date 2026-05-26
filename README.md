@@ -6,11 +6,109 @@ CodeDiff is a live code review workspace for Neovim with VSCode style diffs, bui
 
 CodeDiff stays synchronized with a changing repository, so review can continue as the code evolves. From the same workspace, you can stage or discard changes, review branches and pull requests, browse history, and resolve merge conflicts.
 
+> [!IMPORTANT]
+> This repository is a personal, maintained fork of [`esmuellert/codediff.nvim`](https://github.com/esmuellert/codediff.nvim).
+> It tracks the upstream `main` branch and carries a patch stack for changes I use locally while upstream pull requests are pending or not accepted.
+> If you want the canonical project, use the upstream repository.
+
 <div align="center">
 
 https://github.com/user-attachments/assets/3c66a26d-5ff9-4dac-8035-a2f2b7bd2308
 
 </div>
+
+## Maintaining this fork
+
+This fork uses `origin/main` as the branch I install from my Neovim configuration. The branch is periodically rebased on top of `upstream/main`, then my local patch stack is re-applied.
+
+Current upstream remote:
+
+```bash
+git remote add upstream https://github.com/esmuellert/codediff.nvim.git
+```
+
+Refresh the local view of both repositories:
+
+```bash
+git fetch --multiple upstream origin
+```
+
+Rebuild this fork's `main` branch from upstream and apply the maintained patches:
+
+```bash
+git switch main
+git reset --hard upstream/main
+
+git cherry-pick origin/feat/history-auto-expand-commits
+git cherry-pick origin/fix/test-runtimepath
+git cherry-pick origin/feat/reviewed-file-markers
+```
+
+The Git commits on `main` are the source of truth. Files in `patches/` are an exported backup/documentation artifact. Keep that export in a final commit at the tip of `main`, separate from the functional patch commits:
+
+```text
+upstream/main
+  + docs: document maintained fork workflow
+  + feat(history): auto-expand commits on file navigation boundary
+  + test: keep user config plugins out of the test runtimepath
+  + feat(explorer): add reviewed file markers
+  + docs: update patch exports  # generated patches only, always HEAD
+```
+
+Regenerate and commit the patch export after rebuilding or changing the stack:
+
+```bash
+rm -f patches/*.patch
+git format-patch upstream/main..HEAD -o patches
+git add patches
+git commit -m "docs: update patch exports"
+
+git push --force-with-lease origin main
+```
+
+If the `docs: update patch exports` commit already exists at `HEAD` and you want to update the stack beneath it, first move that generated commit out of the way while keeping its files in the worktree:
+
+```bash
+git reset --soft HEAD~1
+git restore --staged patches
+
+# Rebase/cherry-pick/edit the functional patch stack here.
+
+rm -f patches/*.patch
+git format-patch upstream/main..HEAD -o patches
+git add patches
+git commit -m "docs: update patch exports"
+```
+
+Equivalently, when only refreshing the export while the export commit is still at `HEAD`, format the real stack with `HEAD~1` so the generated export commit does not export itself:
+
+```bash
+rm -f patches/*.patch
+git format-patch upstream/main..HEAD~1 -o patches
+git add patches
+git commit --amend --no-edit
+```
+
+For small upstream syncs, rebasing the functional commits can also work:
+
+```bash
+git fetch --multiple upstream origin
+git switch main
+# Drop or exclude the final patch-export commit before rebasing the functional stack.
+git rebase upstream/main
+```
+
+Enable Git's conflict-resolution reuse to make repeated rebases/cherry-picks easier:
+
+```bash
+git config rerere.enabled true
+```
+
+The exported patches can be re-applied with:
+
+```bash
+git am -3 patches/*.patch
+```
 
 ## Features
 
