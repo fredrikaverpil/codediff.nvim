@@ -1,0 +1,384 @@
+From f53ed57b39f430b6e41c11bc1b9c0b465a492d3b Mon Sep 17 00:00:00 2001
+From: Fredrik Averpil <fredrik.averpil@gmail.com>
+Date: Wed, 25 Mar 2026 10:21:32 +0100
+Subject: [PATCH 3/4] feat(ui): add compact mode to fold unchanged regions in
+ diff view
+
+Toggle with `gc` to fold away unchanged code, showing only hunks plus
+configurable context lines (default 3). Works in both side-by-side and
+inline layouts. Saves and restores the user's original fold state when
+toggling off. Integrates with auto-refresh and layout toggle.
+---
+ README.md                        |   4 +-
+ lua/codediff/config.lua          |   2 +
+ lua/codediff/ui/auto_refresh.lua |   3 +
+ lua/codediff/ui/keymap_help.lua  |   1 +
+ lua/codediff/ui/view/compact.lua | 215 +++++++++++++++++++++++++++++++
+ lua/codediff/ui/view/keymaps.lua |   9 ++
+ lua/codediff/ui/view/toggle.lua  |  12 ++
+ 7 files changed, 245 insertions(+), 1 deletion(-)
+ create mode 100644 lua/codediff/ui/view/compact.lua
+
+diff --git a/README.md b/README.md
+index 71f9bd5..536755e 100644
+--- a/README.md
++++ b/README.md
+@@ -165,6 +165,7 @@ git am -3 patches/*.patch
+       jump_to_first_change = true,        -- Auto-scroll to first change when opening a diff: false to stay at same line
+       highlight_priority = 100,           -- Priority for line-level diff highlights (increase to override LSP highlights)
+       compute_moves = false,              -- Detect moved code blocks (opt-in, matches VSCode experimental.showMoves)
++      compact_context_lines = 3,          -- Number of context lines around hunks in compact mode
+     },
+ 
+     -- Explorer panel configuration
+@@ -225,6 +226,7 @@ git am -3 patches/*.patch
+         show_help = "g?",   -- Show floating window with available keymaps
+         align_move = "gm", -- Temporarily align moved code blocks across panes
+         toggle_layout = "t", -- Toggle between side-by-side and inline layout
++        toggle_compact = "gc", -- Toggle compact mode (fold unchanged regions)
+       },
+       explorer = {
+         select = "<CR>",    -- Open diff for selected file
+@@ -798,7 +800,7 @@ codediff.nvim/
+ 
+ - [x] Inline diff mode (single buffer view)
+ - [x] Moved code detection (VSCode parity)
+-- [ ] Fold support for large diffs
++- [x] Fold support for large diffs
+ 
+ ## VSCode Reference
+ 
+diff --git a/lua/codediff/config.lua b/lua/codediff/config.lua
+index 555be6a..bc0c202 100644
+--- a/lua/codediff/config.lua
++++ b/lua/codediff/config.lua
+@@ -44,6 +44,7 @@ M.defaults = {
+     jump_to_first_change = true, -- Auto-scroll to first change when opening a diff: true = jump to first hunk, false = stay at same line
+     highlight_priority = 100, -- Priority for line-level diff highlights (increase to override LSP highlights)
+     compute_moves = false, -- Detect moved code blocks (opt-in, may increase diff computation time)
++    compact_context_lines = 3, -- Number of context lines around hunks in compact mode
+   },
+ 
+   -- Explorer panel configuration
+@@ -103,6 +104,7 @@ M.defaults = {
+       hunk_textobject = "ih", -- Textobject for hunk (vih to select, yih to yank, etc.)
+       align_move = "gm", -- Temporarily align other pane to show paired moved code
+       toggle_layout = "t", -- Toggle diff layout for the current codediff session
++      toggle_compact = "gc", -- Toggle compact mode (fold unchanged regions, show only hunks + context)
+       show_help = "g?", -- Show floating window with available keymaps
+     },
+     explorer = {
+diff --git a/lua/codediff/ui/auto_refresh.lua b/lua/codediff/ui/auto_refresh.lua
+index b56814f..744237a 100644
+--- a/lua/codediff/ui/auto_refresh.lua
++++ b/lua/codediff/ui/auto_refresh.lua
+@@ -100,6 +100,9 @@ local function do_diff_update(bufnr, skip_watcher_check)
+     -- Update stored diff result in lifecycle (critical for hunk navigation and do/dp)
+     lifecycle.update_diff_result(tabpage, lines_diff)
+ 
++    -- Refresh compact mode folds if active
++    require("codediff.ui.view.compact").refresh(tabpage)
++
+     -- Check if this is an inline mode session
+     local session = lifecycle.get_session(tabpage)
+     if session and session.layout == "inline" then
+diff --git a/lua/codediff/ui/keymap_help.lua b/lua/codediff/ui/keymap_help.lua
+index 15ffe82..5654fbc 100644
+--- a/lua/codediff/ui/keymap_help.lua
++++ b/lua/codediff/ui/keymap_help.lua
+@@ -62,6 +62,7 @@ local function build_sections(keymaps, is_explorer, is_history, is_conflict)
+     table.insert(view_items, { km.discard_hunk, "Discard hunk under cursor" })
+   end
+   table.insert(view_items, { km.toggle_layout, "Toggle inline/side-by-side layout" })
++  table.insert(view_items, { km.toggle_compact, "Toggle compact mode (fold unchanged)" })
+   if km.align_move then
+     table.insert(view_items, { km.align_move, "Align moved code block" })
+   end
+diff --git a/lua/codediff/ui/view/compact.lua b/lua/codediff/ui/view/compact.lua
+new file mode 100644
+index 0000000..243d39f
+--- /dev/null
++++ b/lua/codediff/ui/view/compact.lua
+@@ -0,0 +1,215 @@
++-- Compact mode: fold unchanged regions, showing only hunks + context lines
++local M = {}
++
++local lifecycle = require("codediff.ui.lifecycle")
++local config = require("codediff.config")
++
++-- Module-level state: maps window ID → set of visible line numbers
++local visible_lines_by_win = {}
++
++--- Called by Neovim for each line when foldmethod=expr
++--- @return string fold level: "0" for visible lines, "1" for foldable
++function M.foldexpr_eval()
++  local visible = visible_lines_by_win[vim.api.nvim_get_current_win()]
++  if not visible then
++    return "0"
++  end
++  return visible[vim.v.lnum] and "0" or "1"
++end
++
++--- Compute set of line numbers that should remain visible (near hunks)
++--- @param changes table[] array of hunk mappings with original/modified ranges
++--- @param side string "original" or "modified"
++--- @param line_count number total lines in buffer
++--- @param context_lines number lines of context around each hunk
++--- @return table<number, boolean> set of 1-indexed visible line numbers
++function M.compute_visible_lines(changes, side, line_count, context_lines)
++  local visible = {}
++  for _, change in ipairs(changes) do
++    local range = change[side]
++    local range_start = range.start_line
++    local range_end = range.end_line -- exclusive
++
++    -- For zero-width ranges (pure insertion/deletion), use start_line as anchor
++    if range_start == range_end then
++      range_end = range_start + 1
++    end
++
++    local ctx_start = math.max(1, range_start - context_lines)
++    local ctx_end = math.min(line_count, range_end - 1 + context_lines)
++    for l = ctx_start, ctx_end do
++      visible[l] = true
++    end
++  end
++  return visible
++end
++
++--- Enable compact mode for a tabpage
++--- @param tabpage number
++--- @return boolean success
++function M.enable(tabpage)
++  local session = lifecycle.get_session(tabpage)
++  if not session or not session.stored_diff_result then
++    return false
++  end
++  if session.compact_mode then
++    return true
++  end
++  if session.result_win and vim.api.nvim_win_is_valid(session.result_win) then
++    vim.notify("Cannot enable compact mode in conflict mode", vim.log.levels.WARN)
++    return false
++  end
++
++  local changes = session.stored_diff_result.changes
++  if not changes or #changes == 0 then
++    vim.notify("No changes to compact", vim.log.levels.INFO)
++    return false
++  end
++
++  local context = config.options.diff.compact_context_lines
++
++  -- Determine which windows to fold
++  local entries = {}
++  if session.layout == "inline" then
++    table.insert(entries, { win = session.modified_win, buf = session.modified_bufnr, side = "modified" })
++  else
++    table.insert(entries, { win = session.original_win, buf = session.original_bufnr, side = "original" })
++    table.insert(entries, { win = session.modified_win, buf = session.modified_bufnr, side = "modified" })
++  end
++
++  session.compact_saved_fold_state = {}
++
++  for _, entry in ipairs(entries) do
++    if entry.win and vim.api.nvim_win_is_valid(entry.win) then
++      -- Save current fold state
++      session.compact_saved_fold_state[entry.win] = {
++        foldmethod = vim.wo[entry.win].foldmethod,
++        foldexpr = vim.wo[entry.win].foldexpr,
++        foldlevel = vim.wo[entry.win].foldlevel,
++        foldminlines = vim.wo[entry.win].foldminlines,
++        foldenable = vim.wo[entry.win].foldenable,
++        foldtext = vim.wo[entry.win].foldtext,
++      }
++
++      -- Compute visible lines
++      local line_count = vim.api.nvim_buf_line_count(entry.buf)
++      visible_lines_by_win[entry.win] = M.compute_visible_lines(changes, entry.side, line_count, context)
++
++      -- Apply fold settings
++      vim.wo[entry.win].foldmethod = "expr"
++      vim.wo[entry.win].foldexpr = "v:lua.require'codediff.ui.view.compact'.foldexpr_eval()"
++      vim.wo[entry.win].foldenable = true
++      vim.wo[entry.win].foldlevel = 0
++      vim.wo[entry.win].foldminlines = 1
++    end
++  end
++
++  session.compact_mode = true
++  return true
++end
++
++--- Disable compact mode for a tabpage
++--- @param tabpage number
++--- @return boolean success
++function M.disable(tabpage)
++  local session = lifecycle.get_session(tabpage)
++  if not session or not session.compact_mode then
++    return false
++  end
++
++  local saved = session.compact_saved_fold_state or {}
++  for win, fold_state in pairs(saved) do
++    if vim.api.nvim_win_is_valid(win) then
++      vim.wo[win].foldmethod = fold_state.foldmethod
++      vim.wo[win].foldexpr = fold_state.foldexpr
++      vim.wo[win].foldlevel = fold_state.foldlevel
++      vim.wo[win].foldminlines = fold_state.foldminlines
++      vim.wo[win].foldenable = fold_state.foldenable
++      vim.wo[win].foldtext = fold_state.foldtext
++    end
++    visible_lines_by_win[win] = nil
++  end
++
++  session.compact_saved_fold_state = nil
++  session.compact_mode = false
++  return true
++end
++
++--- Toggle compact mode
++--- @param tabpage? number defaults to current tabpage
++--- @return boolean success
++function M.toggle(tabpage)
++  tabpage = tabpage or vim.api.nvim_get_current_tabpage()
++  local session = lifecycle.get_session(tabpage)
++  if not session then
++    return false
++  end
++
++  if session.compact_mode then
++    return M.disable(tabpage)
++  else
++    return M.enable(tabpage)
++  end
++end
++
++--- Re-apply compact mode fold settings to current windows.
++--- Called after file switches or re-renders where window buffers change
++--- but session.compact_mode should persist.
++--- @param tabpage number
++function M.reapply(tabpage)
++  local session = lifecycle.get_session(tabpage)
++  if not session or not session.compact_mode then
++    return
++  end
++  if not session.stored_diff_result then
++    return
++  end
++
++  local changes = session.stored_diff_result.changes
++  if not changes or #changes == 0 then
++    return
++  end
++
++  local context = config.options.diff.compact_context_lines
++
++  local entries = {}
++  if session.layout == "inline" then
++    table.insert(entries, { win = session.modified_win, buf = session.modified_bufnr, side = "modified" })
++  else
++    table.insert(entries, { win = session.original_win, buf = session.original_bufnr, side = "original" })
++    table.insert(entries, { win = session.modified_win, buf = session.modified_bufnr, side = "modified" })
++  end
++
++  for _, entry in ipairs(entries) do
++    if entry.win and vim.api.nvim_win_is_valid(entry.win) then
++      local line_count = vim.api.nvim_buf_line_count(entry.buf)
++      visible_lines_by_win[entry.win] = M.compute_visible_lines(changes, entry.side, line_count, context)
++
++      vim.wo[entry.win].foldmethod = "expr"
++      vim.wo[entry.win].foldexpr = "v:lua.require'codediff.ui.view.compact'.foldexpr_eval()"
++      vim.wo[entry.win].foldenable = true
++      vim.wo[entry.win].foldlevel = 0
++      vim.wo[entry.win].foldminlines = 1
++    end
++  end
++end
++
++--- Refresh compact mode after diff recomputation.
++--- Re-applies fold settings and forces fold re-evaluation.
++--- @param tabpage number
++function M.refresh(tabpage)
++  local session = lifecycle.get_session(tabpage)
++  if not session or not session.compact_mode then
++    return
++  end
++
++  local changes = session.stored_diff_result and session.stored_diff_result.changes
++  if not changes or #changes == 0 then
++    M.disable(tabpage)
++    return
++  end
++
++  M.reapply(tabpage)
++end
++
++return M
+diff --git a/lua/codediff/ui/view/keymaps.lua b/lua/codediff/ui/view/keymaps.lua
+index 546bef0..d70aeda 100644
+--- a/lua/codediff/ui/view/keymaps.lua
++++ b/lua/codediff/ui/view/keymaps.lua
+@@ -6,6 +6,7 @@ local auto_refresh = require("codediff.ui.auto_refresh")
+ local config = require("codediff.config")
+ local navigation = require("codediff.ui.view.navigation")
+ local render = require("codediff.ui.view.render")
++local compact = require("codediff.ui.view.compact")
+ 
+ -- Centralized keymap setup for all diff view keymaps
+ -- This function sets up ALL keymaps in one place for better maintainability
+@@ -590,6 +591,11 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
+       require("codediff.ui.view").toggle_layout(tabpage)
+     end, { desc = "Toggle diff layout" })
+   end
++  if keymaps.toggle_compact then
++    lifecycle.set_tab_keymap(tabpage, "n", keymaps.toggle_compact, function()
++      compact.toggle(tabpage)
++    end, { desc = "Toggle compact mode" })
++  end
+ 
+   -- Toggle stage/unstage (- key) - only in explorer mode
+   -- Support legacy config: keymaps.explorer.toggle_stage (deprecated)
+@@ -834,6 +840,9 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
+   if keymaps.align_move and not is_inline and config.options.diff.compute_moves then
+     lifecycle.set_tab_keymap(tabpage, "n", keymaps.align_move, align_move, { desc = "Align moved code block" })
+   end
++
++  -- Re-apply compact mode folds if active (persists across file switches)
++  compact.reapply(tabpage)
+ end
+ 
+ return M
+diff --git a/lua/codediff/ui/view/toggle.lua b/lua/codediff/ui/view/toggle.lua
+index b8311d7..7d2a815 100644
+--- a/lua/codediff/ui/view/toggle.lua
++++ b/lua/codediff/ui/view/toggle.lua
+@@ -103,6 +103,13 @@ function M.toggle(tabpage)
+   local normalize = target_layout == "inline" and normalize_inline_layout or normalize_side_by_side_layout
+   local previous_layout = session.layout
+ 
++  -- Disable compact mode before changing layout (window IDs will change)
++  local compact = require("codediff.ui.view.compact")
++  local was_compact = session.compact_mode
++  if was_compact then
++    compact.disable(tabpage)
++  end
++
+   if not normalize(tabpage) then
+     return false
+   end
+@@ -111,6 +118,11 @@ function M.toggle(tabpage)
+     layout.arrange(tabpage)
+   end
+ 
++  -- Re-enable compact mode in new layout
++  if was_compact then
++    compact.enable(tabpage)
++  end
++
+   return true
+ end
+ 
+-- 
+2.53.0
+

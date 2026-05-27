@@ -1,0 +1,95 @@
+From 231d507da2fa98c8b66c83b2d2f936b126e1b063 Mon Sep 17 00:00:00 2001
+From: Fredrik Averpil <fredrik.averpil@gmail.com>
+Date: Tue, 26 May 2026 08:13:56 +0200
+Subject: [PATCH 1/4] docs: document maintained fork workflow
+
+---
+ README.md | 65 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 65 insertions(+)
+
+diff --git a/README.md b/README.md
+index 8a4f9b2..71f9bd5 100644
+--- a/README.md
++++ b/README.md
+@@ -4,6 +4,11 @@
+ 
+ A Neovim plugin that provides VSCode-style diff rendering with two-tier highlighting, supporting both side-by-side and inline (unified) layouts.
+ 
++> [!IMPORTANT]
++> This repository is a personal, maintained fork of [`esmuellert/codediff.nvim`](https://github.com/esmuellert/codediff.nvim).
++> It tracks the upstream `main` branch and carries a patch stack for changes I use locally while upstream pull requests are pending or not accepted.
++> If you want the canonical project, use the upstream repository.
++
+ <div align="center">
+ 
+ ![VSCode-style diff view showing side-by-side comparison with two-tier highlighting](https://github.com/user-attachments/assets/473ae319-40ac-40e4-958b-a0f2525d1f94)
+@@ -18,6 +23,66 @@ https://github.com/user-attachments/assets/64c41f01-dffe-4318-bce4-16eec8de356e
+ 
+ </div>
+ 
++## Maintaining this fork
++
++This fork uses `origin/main` as the branch I install from my Neovim configuration. The branch is periodically rebased on top of `upstream/main`, then my local patch stack is re-applied.
++
++Current upstream remote:
++
++```bash
++git remote add upstream https://github.com/esmuellert/codediff.nvim.git
++```
++
++Refresh the local view of both repositories:
++
++```bash
++git fetch upstream origin
++```
++
++Rebuild this fork's `main` branch from upstream and apply the maintained patches:
++
++```bash
++git switch main
++git reset --hard upstream/main
++
++git cherry-pick origin/feat/history-auto-expand-commits
++git cherry-pick origin/feat/compact-mode
++git cherry-pick origin/feat/inline-diff-api
++
++git push --force-with-lease origin main
++```
++
++For later upstream syncs, rebase this fork's `main` on upstream:
++
++```bash
++git fetch upstream origin
++git switch main
++git rebase upstream/main
++git push --force-with-lease origin main
++```
++
++Enable Git's conflict-resolution reuse to make repeated rebases easier:
++
++```bash
++git config rerere.enabled true
++```
++
++When adding a new maintained change, commit it first and then regenerate the patch export:
++
++```bash
++git add README.md
++git commit -m "docs: document maintained fork workflow"
++
++mkdir -p patches
++git format-patch upstream/main..main -o patches
++```
++
++The Git commits on `main` are the source of truth. Files in `patches/` are an exported backup/documentation artifact that can be re-applied with:
++
++```bash
++git am -3 patches/*.patch
++```
++
+ ## Features
+ 
+ - **Two-tier highlighting system**:
+-- 
+2.53.0
+

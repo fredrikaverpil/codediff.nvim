@@ -1,0 +1,1188 @@
+From 00f527afc5967f47b2bf0bca8cc1c520b2a52dff Mon Sep 17 00:00:00 2001
+From: Fredrik Averpil <fredrik.averpil@gmail.com>
+Date: Wed, 27 May 2026 08:00:12 +0200
+Subject: [PATCH 4/4] feat(explorer): add reviewed file markers
+
+---
+ README.md                               |   2 +
+ doc/codediff.txt                        |   1 +
+ lua/codediff/config.lua                 |   1 +
+ lua/codediff/ui/explorer/actions.lua    | 198 ++++++++---
+ lua/codediff/ui/explorer/init.lua       |   1 +
+ lua/codediff/ui/explorer/nodes.lua      |  16 +-
+ lua/codediff/ui/explorer/render.lua     |   6 +-
+ lua/codediff/ui/highlights.lua          |   3 +
+ lua/codediff/ui/history/init.lua        |   3 +
+ lua/codediff/ui/history/nodes.lua       |  18 +-
+ lua/codediff/ui/history/render.lua      | 416 ++++++++++++++++--------
+ lua/codediff/ui/keymap_help.lua         |   5 +
+ lua/codediff/ui/lifecycle/accessors.lua |   3 +
+ lua/codediff/ui/view/keymaps.lua        |  24 ++
+ tests/init.lua                          |   8 +-
+ 15 files changed, 506 insertions(+), 199 deletions(-)
+
+diff --git a/README.md b/README.md
+index 536755e..fca57bc 100644
+--- a/README.md
++++ b/README.md
+@@ -48,6 +48,7 @@ git reset --hard upstream/main
+ git cherry-pick origin/feat/history-auto-expand-commits
+ git cherry-pick origin/feat/compact-mode
+ git cherry-pick origin/feat/inline-diff-api
++git cherry-pick origin/feat/mark-as-viewed
+ 
+ git push --force-with-lease origin main
+ ```
+@@ -219,6 +220,7 @@ git am -3 patches/*.patch
+         open_in_prev_tab = "gf", -- Open current buffer in previous tab (or create one before)
+         close_on_open_in_prev_tab = false, -- Close codediff tab after gf opens file in previous tab
+         toggle_stage = "-", -- Stage/unstage current file (works in explorer and diff buffers)
++        toggle_reviewed = "v", -- Mark/unmark current file as reviewed (explorer/history mode)
+         stage_hunk = "<leader>hs",   -- Stage hunk under cursor to git index
+         unstage_hunk = "<leader>hu", -- Unstage hunk under cursor from git index
+         discard_hunk = "<leader>hr", -- Discard hunk under cursor (working tree only)
+diff --git a/doc/codediff.txt b/doc/codediff.txt
+index 250bfdf..7c0e4fb 100644
+--- a/doc/codediff.txt
++++ b/doc/codediff.txt
+@@ -233,6 +233,7 @@ Setup entry point:
+         open_in_prev_tab = "gf",
+         close_on_open_in_prev_tab = false,
+         toggle_stage = "-",
++        toggle_reviewed = "v",
+         hunk_textobject = "ih",
+         show_help = "g?",
+         align_move = "gm",
+diff --git a/lua/codediff/config.lua b/lua/codediff/config.lua
+index bc0c202..e5bec23 100644
+--- a/lua/codediff/config.lua
++++ b/lua/codediff/config.lua
+@@ -98,6 +98,7 @@ M.defaults = {
+       open_in_prev_tab = "gf", -- Open current buffer in previous tab (or new tab before current)
+       close_on_open_in_prev_tab = false, -- Close codediff tab after opening in previous tab
+       toggle_stage = "-", -- Stage/unstage current file (works in explorer and diff buffers)
++      toggle_reviewed = "v", -- Mark/unmark current file as reviewed (explorer/history mode)
+       stage_hunk = "<leader>hs", -- Stage the hunk under cursor to git index
+       unstage_hunk = "<leader>hu", -- Unstage the hunk under cursor from git index
+       discard_hunk = "<leader>hr", -- Discard the hunk under cursor (working tree only)
+diff --git a/lua/codediff/ui/explorer/actions.lua b/lua/codediff/ui/explorer/actions.lua
+index acb7acc..65e07c9 100644
+--- a/lua/codediff/ui/explorer/actions.lua
++++ b/lua/codediff/ui/explorer/actions.lua
+@@ -19,6 +19,50 @@ local function find_node_line(explorer, path, group)
+   return nil
+ end
+ 
++local function viewed_key(path, group)
++  if not path or not group then
++    return nil
++  end
++  return group .. ":" .. path
++end
++
++local function is_viewed(explorer, file)
++  local data = file.data or {}
++  local key = viewed_key(data.path, data.group)
++  return key and explorer.viewed_files and explorer.viewed_files[key]
++end
++
++local function select_file(explorer, file)
++  local current_win = vim.api.nvim_get_current_win()
++  if explorer.winid and vim.api.nvim_win_is_valid(explorer.winid) then
++    local line = find_node_line(explorer, file.data.path, file.data.group)
++    if line then
++      vim.api.nvim_set_current_win(explorer.winid)
++      vim.api.nvim_win_set_cursor(explorer.winid, { line, 0 })
++      vim.api.nvim_set_current_win(current_win)
++    end
++  end
++
++  explorer.on_file_select(file.data)
++end
++
++local function notify_all_viewed()
++  vim.notify("All files have been reviewed", vim.log.levels.INFO)
++end
++
++local function notify_no_other_unviewed()
++  vim.notify("No other unreviewed files", vim.log.levels.INFO)
++end
++
++local function has_unviewed_file(explorer, files)
++  for _, file in ipairs(files) do
++    if not is_viewed(explorer, file) then
++      return true
++    end
++  end
++  return false
++end
++
+ -- Navigate to next file in explorer
+ function M.navigate_next(explorer)
+   local all_files = refresh_module.get_all_files(explorer.tree)
+@@ -31,13 +75,21 @@ function M.navigate_next(explorer)
+   local current_path = explorer.current_file_path
+   local current_group = explorer.current_file_group
+ 
+-  -- If no current path, select first file
+-  if not current_path then
+-    local first_file = all_files[1]
+-    explorer.on_file_select(first_file.data)
++  if not has_unviewed_file(explorer, all_files) then
++    notify_all_viewed()
+     return
+   end
+ 
++  -- If no current path, select first unviewed file
++  if not current_path then
++    for _, file in ipairs(all_files) do
++      if not is_viewed(explorer, file) then
++        select_file(explorer, file)
++        return
++      end
++    end
++  end
++
+   -- Find current index (match both path AND group for files in both staged/unstaged)
+   local current_index = 0
+   for i, file in ipairs(all_files) do
+@@ -47,29 +99,35 @@ function M.navigate_next(explorer)
+     end
+   end
+ 
+-  -- Get next file (wrap around if enabled)
+-  if current_index >= #all_files and not config.options.diff.cycle_next_file then
+-    vim.api.nvim_echo({ { string.format("Last file (%d of %d)", #all_files, #all_files), "WarningMsg" } }, false, {})
+-    return
+-  else
+-    vim.api.nvim_echo({}, false, {})
++  if current_index == 0 then
++    for _, file in ipairs(all_files) do
++      if not is_viewed(explorer, file) then
++        select_file(explorer, file)
++        return
++      end
++    end
+   end
+-  local next_index = current_index % #all_files + 1
+-  local next_file = all_files[next_index]
+ 
+-  -- Update tree selection visually (switch to explorer window temporarily)
+-  local current_win = vim.api.nvim_get_current_win()
+-  if vim.api.nvim_win_is_valid(explorer.winid) then
+-    local line = find_node_line(explorer, next_file.data.path, next_file.data.group)
+-    if line then
+-      vim.api.nvim_set_current_win(explorer.winid)
+-      vim.api.nvim_win_set_cursor(explorer.winid, { line, 0 })
+-      vim.api.nvim_set_current_win(current_win)
++  local cycle = config.options.diff.cycle_next_file
++  local search_count = cycle and (#all_files - 1) or (#all_files - current_index)
++  for offset = 1, search_count do
++    local index = current_index + offset
++    if cycle then
++      index = ((index - 1) % #all_files) + 1
++    end
++    local file = all_files[index]
++    if file and not is_viewed(explorer, file) then
++      vim.api.nvim_echo({}, false, {})
++      select_file(explorer, file)
++      return
+     end
+   end
+ 
+-  -- Trigger file select
+-  explorer.on_file_select(next_file.data)
++  if cycle then
++    notify_no_other_unviewed()
++  else
++    vim.api.nvim_echo({ { "Last unreviewed file", "WarningMsg" } }, false, {})
++  end
+ end
+ 
+ -- Navigate to previous file in explorer
+@@ -84,13 +142,22 @@ function M.navigate_prev(explorer)
+   local current_path = explorer.current_file_path
+   local current_group = explorer.current_file_group
+ 
+-  -- If no current path, select last file
+-  if not current_path then
+-    local last_file = all_files[#all_files]
+-    explorer.on_file_select(last_file.data)
++  if not has_unviewed_file(explorer, all_files) then
++    notify_all_viewed()
+     return
+   end
+ 
++  -- If no current path, select last unviewed file
++  if not current_path then
++    for i = #all_files, 1, -1 do
++      local file = all_files[i]
++      if not is_viewed(explorer, file) then
++        select_file(explorer, file)
++        return
++      end
++    end
++  end
++
+   -- Find current index (match both path AND group for files in both staged/unstaged)
+   local current_index = 0
+   for i, file in ipairs(all_files) do
+@@ -100,33 +167,72 @@ function M.navigate_prev(explorer)
+     end
+   end
+ 
+-  -- Get previous file (wrap around if enabled)
+-  if current_index <= 1 and not config.options.diff.cycle_next_file then
+-    vim.api.nvim_echo({ { string.format("First file (1 of %d)", #all_files), "WarningMsg" } }, false, {})
+-    return
++  if current_index == 0 then
++    for i = #all_files, 1, -1 do
++      local file = all_files[i]
++      if not is_viewed(explorer, file) then
++        select_file(explorer, file)
++        return
++      end
++    end
++  end
++
++  local cycle = config.options.diff.cycle_next_file
++  local search_count = cycle and (#all_files - 1) or (current_index - 1)
++  for offset = 1, search_count do
++    local index = current_index - offset
++    if cycle then
++      index = ((index - 1) % #all_files) + 1
++    end
++    local file = all_files[index]
++    if file and not is_viewed(explorer, file) then
++      vim.api.nvim_echo({}, false, {})
++      select_file(explorer, file)
++      return
++    end
++  end
++
++  if cycle then
++    notify_no_other_unviewed()
+   else
+-    vim.api.nvim_echo({}, false, {})
++    vim.api.nvim_echo({ { "First unreviewed file", "WarningMsg" } }, false, {})
+   end
+-  local prev_index = current_index - 2
+-  if prev_index < 0 then
+-    prev_index = #all_files + prev_index
++end
++
++-- Toggle viewed state for the file under the explorer cursor, or the current selected file from diff buffers.
++function M.toggle_viewed(explorer)
++  if not explorer or not explorer.tree then
++    return
+   end
+-  prev_index = prev_index % #all_files + 1
+-  local prev_file = all_files[prev_index]
+ 
+-  -- Update tree selection visually (switch to explorer window temporarily)
+-  local current_win = vim.api.nvim_get_current_win()
+-  if vim.api.nvim_win_is_valid(explorer.winid) then
+-    local line = find_node_line(explorer, prev_file.data.path, prev_file.data.group)
+-    if line then
+-      vim.api.nvim_set_current_win(explorer.winid)
+-      vim.api.nvim_win_set_cursor(explorer.winid, { line, 0 })
+-      vim.api.nvim_set_current_win(current_win)
++  local path
++  local group
++  if explorer.bufnr and vim.api.nvim_get_current_buf() == explorer.bufnr then
++    local node = explorer.tree:get_node()
++    if not node or not node.data or node.data.type == "group" or node.data.type == "directory" then
++      vim.notify("Mark reviewed is only available for files", vim.log.levels.WARN)
++      return
+     end
++    path = node.data.path
++    group = node.data.group
++  else
++    path = explorer.current_file_path
++    group = explorer.current_file_group
++  end
++
++  local key = viewed_key(path, group)
++  if not key then
++    vim.notify("No file selected", vim.log.levels.WARN)
++    return
+   end
+ 
+-  -- Trigger file select
+-  explorer.on_file_select(prev_file.data)
++  explorer.viewed_files = explorer.viewed_files or {}
++  if explorer.viewed_files[key] then
++    explorer.viewed_files[key] = nil
++  else
++    explorer.viewed_files[key] = true
++  end
++  explorer.tree:render()
+ end
+ 
+ -- Toggle explorer visibility (hide/show)
+diff --git a/lua/codediff/ui/explorer/init.lua b/lua/codediff/ui/explorer/init.lua
+index cd8c7c9..8abbd95 100644
+--- a/lua/codediff/ui/explorer/init.lua
++++ b/lua/codediff/ui/explorer/init.lua
+@@ -21,6 +21,7 @@ M.navigate_next = actions.navigate_next
+ M.navigate_prev = actions.navigate_prev
+ M.toggle_visibility = actions.toggle_visibility
+ M.toggle_view_mode = actions.toggle_view_mode
++M.toggle_viewed = actions.toggle_viewed
+ M.toggle_stage_entry = actions.toggle_stage_entry
+ M.toggle_stage_file = actions.toggle_stage_file
+ M.stage_all = actions.stage_all
+diff --git a/lua/codediff/ui/explorer/nodes.lua b/lua/codediff/ui/explorer/nodes.lua
+index 705edcd..a9d95f2 100644
+--- a/lua/codediff/ui/explorer/nodes.lua
++++ b/lua/codediff/ui/explorer/nodes.lua
+@@ -242,7 +242,7 @@ function M.create_tree_file_nodes(files, git_root, group)
+ end
+ 
+ -- Prepare node for rendering (format display)
+-function M.prepare_node(node, max_width, selected_path, selected_group)
++function M.prepare_node(node, max_width, selected_path, selected_group, viewed_files)
+   local line = Line()
+   local data = node.data or {}
+   local explorer_config = config.options.explorer or {}
+@@ -295,6 +295,8 @@ function M.prepare_node(node, max_width, selected_path, selected_group)
+   else
+     -- Match both path AND group to handle files in both staged and unstaged
+     local is_selected = data.path and data.path == selected_path and data.group == selected_group
++    local viewed_key = data.path and data.group and (data.group .. ":" .. data.path)
++    local is_viewed = viewed_key and viewed_files and viewed_files[viewed_key]
+ 
+     -- Get selected background color once
+     local selected_bg = nil
+@@ -342,6 +344,9 @@ function M.prepare_node(node, max_width, selected_path, selected_group)
+       line:append(icon_part, get_hl(data.icon_color))
+     end
+ 
++    local viewed_marker = is_viewed and "✓ " or "  "
++    line:append(viewed_marker, get_hl(is_viewed and "CodeDiffExplorerViewed" or "Normal"))
++
+     -- Status symbol at the end (e.g., "M", "D", "??")
+     local status_symbol = data.status_symbol or ""
+ 
+@@ -353,7 +358,7 @@ function M.prepare_node(node, max_width, selected_path, selected_group)
+ 
+     -- Calculate how much width we've used and reserve for status
+     local status_margin = config.options.explorer.status_right_margin or 1
+-    local used_width = vim.fn.strdisplaywidth(indent) + vim.fn.strdisplaywidth(icon_part)
++    local used_width = vim.fn.strdisplaywidth(indent) + vim.fn.strdisplaywidth(icon_part) + vim.fn.strdisplaywidth(viewed_marker)
+     -- Reserve = symbol + 2 cells of minimum gap from content + configurable trailing margin
+     local status_reserve = vim.fn.strdisplaywidth(status_symbol) + 2 + status_margin
+     local available_for_content = max_width - used_width - status_reserve
+@@ -390,10 +395,11 @@ function M.prepare_node(node, max_width, selected_path, selected_group)
+     end
+ 
+     -- Append filename (normal weight) and directory (dimmed)
+-    line:append(filename, get_hl("Normal"))
++    local file_hl = is_viewed and "CodeDiffExplorerViewed" or "Normal"
++    line:append(filename, get_hl(file_hl))
+     if #directory > 0 then
+-      line:append(" ", get_hl("Normal"))
+-      line:append(directory, get_hl("ExplorerDirectorySmall"))
++      line:append(" ", get_hl(file_hl))
++      line:append(directory, get_hl(is_viewed and "CodeDiffExplorerViewed" or "ExplorerDirectorySmall"))
+     end
+ 
+     -- Right-align status symbol; trailing `status_margin` cells keep it visible against the window edge
+diff --git a/lua/codediff/ui/explorer/render.lua b/lua/codediff/ui/explorer/render.lua
+index be5e762..93c303b 100644
+--- a/lua/codediff/ui/explorer/render.lua
++++ b/lua/codediff/ui/explorer/render.lua
+@@ -106,9 +106,10 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
+     split:hide()
+   end
+ 
+-  -- Track selected path and group for highlighting
++  -- Track selected path/group and viewed files for highlighting
+   local selected_path = nil
+   local selected_group = nil
++  local viewed_files = {}
+ 
+   -- Create tree with buffer number
+   local tree_data = tree_module.create_tree_data(status_result, git_root, base_revision, is_dir_mode, explorer_config.visible_groups)
+@@ -121,7 +122,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
+       if split.winid and vim.api.nvim_win_is_valid(split.winid) then
+         current_width = vim.api.nvim_win_get_width(split.winid)
+       end
+-      return nodes_module.prepare_node(node, current_width, selected_path, selected_group)
++      return nodes_module.prepare_node(node, current_width, selected_path, selected_group, viewed_files)
+     end,
+   })
+ 
+@@ -186,6 +187,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
+     current_file_path = nil, -- Track currently selected file
+     current_file_group = nil, -- Track currently selected file's group (staged/unstaged)
+     current_selection = nil, -- Full file selection used to replay current state
++    viewed_files = viewed_files, -- Session-local set of group:path entries marked as viewed
+     is_hidden = explorer_config.hidden, -- Track visibility state
+     visible_groups = vim.deepcopy(explorer_config.visible_groups or { staged = true, unstaged = true, conflicts = true }),
+   }
+diff --git a/lua/codediff/ui/highlights.lua b/lua/codediff/ui/highlights.lua
+index c947269..c520e86 100644
+--- a/lua/codediff/ui/highlights.lua
++++ b/lua/codediff/ui/highlights.lua
+@@ -191,6 +191,9 @@ function M.setup()
+     default = true,
+   })
+ 
++  -- Explorer reviewed file highlight
++  vim.api.nvim_set_hl(0, "CodeDiffExplorerViewed", { link = "DiagnosticOk", default = true })
++
+   -- Explorer git status highlights (customizable, like diffview.nvim)
+   vim.api.nvim_set_hl(0, "CodeDiffStatusAdded", { link = "DiagnosticOk", default = true })
+   vim.api.nvim_set_hl(0, "CodeDiffStatusModified", { link = "DiagnosticWarn", default = true })
+diff --git a/lua/codediff/ui/history/init.lua b/lua/codediff/ui/history/init.lua
+index 9d71dc3..e12002f 100644
+--- a/lua/codediff/ui/history/init.lua
++++ b/lua/codediff/ui/history/init.lua
+@@ -21,6 +21,9 @@ M.navigate_prev = render.navigate_prev
+ M.navigate_next_commit = render.navigate_next_commit
+ M.navigate_prev_commit = render.navigate_prev_commit
+ 
++-- Toggle reviewed state
++M.toggle_viewed = render.toggle_viewed
++
+ -- Toggle visibility
+ M.toggle_visibility = render.toggle_visibility
+ 
+diff --git a/lua/codediff/ui/history/nodes.lua b/lua/codediff/ui/history/nodes.lua
+index 69fdf04..594392e 100644
+--- a/lua/codediff/ui/history/nodes.lua
++++ b/lua/codediff/ui/history/nodes.lua
+@@ -216,7 +216,7 @@ end
+ 
+ -- Prepare node for rendering (format display)
+ -- Match diffview format: [fold] [file count] | [adds] [dels] | hash subject author, date
+-function M.prepare_node(node, max_width, selected_commit, selected_file, is_single_file_mode)
++function M.prepare_node(node, max_width, selected_commit, selected_file, is_single_file_mode, viewed_files)
+   local line = Line()
+   local data = node.data or {}
+ 
+@@ -229,6 +229,7 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
+     -- In single-file mode, highlight commit when hash matches (no file nodes exist)
+     -- In multi-file mode, highlight commit only when no file is selected
+     local is_selected = data.hash == selected_commit and (is_single_file_mode or not selected_file)
++    local is_reviewed = is_single_file_mode and viewed_files and viewed_files[data.hash .. ":" .. (data.file_path or "")]
+     local is_expanded = node:is_expanded()
+ 
+     -- Get selected background color once
+@@ -251,8 +252,8 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
+     end
+ 
+     -- Expand/collapse indicator
+-    local expand_icon = is_expanded and " " or " "
+-    line:append(expand_icon, get_hl("NonText"))
++    local expand_icon = is_reviewed and "✓" or (is_expanded and " " or " ")
++    line:append(expand_icon, get_hl(is_reviewed and "CodeDiffExplorerViewed" or "NonText"))
+ 
+     -- File count (padded to align) - skip in single file mode (when file_path is set)
+     if not data.file_path then
+@@ -315,6 +316,8 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
+     -- File node format (diffview style):
+     -- [tree char] [status] [icon] [path/]filename
+     local is_selected = data.commit_hash == selected_commit and data.path == selected_file
++    local review_key = data.commit_hash .. ":" .. data.path
++    local is_reviewed = viewed_files and viewed_files[review_key]
+ 
+     local selected_bg = nil
+     if is_selected then
+@@ -348,6 +351,9 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
+     end
+     line:append(indent_str, get_hl("Comment"))
+ 
++    local reviewed_marker = is_reviewed and "✓ " or "  "
++    line:append(reviewed_marker, get_hl(is_reviewed and "CodeDiffExplorerViewed" or "Normal"))
++
+     -- Status symbol
+     line:append(data.status_symbol .. " ", get_hl(data.status_color))
+ 
+@@ -361,16 +367,16 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
+     if #indent_state > 1 then
+       -- Tree mode: just filename
+       filename = data.path:match("([^/]+)$") or data.path
+-      line:append(filename, get_hl("Normal"))
++      line:append(filename, get_hl(is_reviewed and "CodeDiffExplorerViewed" or "Normal"))
+     else
+       -- List mode: show full path with directory dimmed
+       local full_path = data.path
+       filename = full_path:match("([^/]+)$") or full_path
+       local directory = full_path:sub(1, -(#filename + 2))
+       if #directory > 0 then
+-        line:append(directory .. "/", get_hl("Comment"))
++        line:append(directory .. "/", get_hl(is_reviewed and "CodeDiffExplorerViewed" or "Comment"))
+       end
+-      line:append(filename, get_hl("Normal"))
++      line:append(filename, get_hl(is_reviewed and "CodeDiffExplorerViewed" or "Normal"))
+     end
+ 
+     -- Pad with spaces to fill full line width when selected
+diff --git a/lua/codediff/ui/history/render.lua b/lua/codediff/ui/history/render.lua
+index f137949..3470ced 100644
+--- a/lua/codediff/ui/history/render.lua
++++ b/lua/codediff/ui/history/render.lua
+@@ -77,7 +77,7 @@ function M.build_tree_nodes(commits, git_root, opts)
+         file_count = commit.files_changed,
+         git_root = git_root,
+         files_loaded = false,
+-        file_path = commit.file_path,
++        file_path = commit.file_path or opts.file_path,
+         max_files_width = max_files_width,
+         max_ins_width = max_ins_width,
+         max_del_width = max_del_width,
+@@ -137,9 +137,10 @@ function M.create(commits, git_root, tabpage, width, opts)
+   split:mount()
+   pcall(vim.api.nvim_buf_set_name, split.bufnr, "CodeDiff History [" .. tabpage .. "]")
+ 
+-  -- Track selected commit and file
++  -- Track selected commit/file and reviewed files for highlighting
+   local selected_commit = nil
+   local selected_file = nil
++  local viewed_files = {}
+ 
+   -- Check if single file mode
+   local is_single_file_mode = opts.file_path and opts.file_path ~= ""
+@@ -161,7 +162,7 @@ function M.create(commits, git_root, tabpage, width, opts)
+       if split.winid and vim.api.nvim_win_is_valid(split.winid) then
+         current_width = vim.api.nvim_win_get_width(split.winid)
+       end
+-      return nodes_module.prepare_node(node, current_width, selected_commit, selected_file, is_single_file_mode)
++      return nodes_module.prepare_node(node, current_width, selected_commit, selected_file, is_single_file_mode, viewed_files)
+     end,
+   })
+ 
+@@ -180,6 +181,7 @@ function M.create(commits, git_root, tabpage, width, opts)
+     current_commit = nil,
+     current_file = nil,
+     current_selection = nil,
++    viewed_files = viewed_files,
+     is_hidden = false,
+     is_single_file_mode = is_single_file_mode,
+   }
+@@ -441,6 +443,50 @@ function M.rerender_current(history)
+   return false
+ end
+ 
++local function review_key(commit_hash, file_path)
++  if not commit_hash or not file_path then
++    return nil
++  end
++  return commit_hash .. ":" .. file_path
++end
++
++local function is_reviewed(history, item)
++  local data = item and item.data
++  local key = data and review_key(data.commit_hash or data.hash, data.path or data.file_path or history.opts.file_path)
++  return key and history.viewed_files and history.viewed_files[key]
++end
++
++local function has_unreviewed(history, items)
++  for _, item in ipairs(items) do
++    if not is_reviewed(history, item) then
++      return true
++    end
++  end
++  return false
++end
++
++local function notify_all_reviewed()
++  vim.notify("All files have been reviewed", vim.log.levels.INFO)
++end
++
++local function notify_no_other_unreviewed()
++  vim.notify("No other unreviewed files", vim.log.levels.INFO)
++end
++
++local function set_history_cursor(history, node)
++  local current_win = vim.api.nvim_get_current_win()
++  if history.winid and vim.api.nvim_win_is_valid(history.winid) then
++    vim.api.nvim_set_current_win(history.winid)
++    vim.api.nvim_win_set_cursor(history.winid, { node._line or 1, 0 })
++    vim.api.nvim_set_current_win(current_win)
++  end
++end
++
++local function select_history_file(history, item)
++  set_history_cursor(history, item.node)
++  history.on_file_select(item.data)
++end
++
+ -- Collect all files from a commit node (handles tree mode with nested directories)
+ local function collect_commit_files(tree, commit_node)
+   local files = {}
+@@ -478,16 +524,6 @@ function M.get_all_files(tree)
+   return files
+ end
+ 
+--- Update cursor position in history panel
+-local function update_cursor(history, node)
+-  local current_win = vim.api.nvim_get_current_win()
+-  if vim.api.nvim_win_is_valid(history.winid) then
+-    vim.api.nvim_set_current_win(history.winid)
+-    vim.api.nvim_win_set_cursor(history.winid, { node._line or 1, 0 })
+-    vim.api.nvim_set_current_win(current_win)
+-  end
+-end
+-
+ -- Find current position: returns commit_idx, file_idx, commits list
+ local function find_current_position(history)
+   local commits = {}
+@@ -515,7 +551,31 @@ local function find_current_position(history)
+   return nil, nil, commits
+ end
+ 
+--- Navigate to next file (auto-expands next commit at boundary)
++local function select_first_unreviewed_file(history, commit_node)
++  for _, file in ipairs(collect_commit_files(history.tree, commit_node)) do
++    if not is_reviewed(history, file) then
++      vim.api.nvim_echo({}, false, {})
++      select_history_file(history, file)
++      return true
++    end
++  end
++  return false
++end
++
++local function select_last_unreviewed_file(history, commit_node)
++  local files = collect_commit_files(history.tree, commit_node)
++  for i = #files, 1, -1 do
++    local file = files[i]
++    if not is_reviewed(history, file) then
++      vim.api.nvim_echo({}, false, {})
++      select_history_file(history, file)
++      return true
++    end
++  end
++  return false
++end
++
++-- Navigate to next file (skips reviewed files and auto-expands next commit at boundary)
+ function M.navigate_next(history)
+   local commit_idx, file_idx, commits = find_current_position(history)
+ 
+@@ -524,16 +584,11 @@ function M.navigate_next(history)
+     return
+   end
+ 
+-  -- No current selection: select first file of first expanded commit
++  -- No current selection: select first unreviewed file from expanded commits.
+   if not commit_idx then
+     for _, commit_node in ipairs(commits) do
+-      if commit_node:is_expanded() then
+-        local files = collect_commit_files(history.tree, commit_node)
+-        if #files > 0 then
+-          update_cursor(history, files[1].node)
+-          history.on_file_select(files[1].data)
+-          return
+-        end
++      if commit_node:is_expanded() and select_first_unreviewed_file(history, commit_node) then
++        return
+       end
+     end
+     vim.notify("No files in history", vim.log.levels.WARN)
+@@ -543,39 +598,52 @@ function M.navigate_next(history)
+   local current_commit = commits[commit_idx]
+   local files = collect_commit_files(history.tree, current_commit)
+ 
+-  -- Not at boundary: go to next file in same commit
+-  if file_idx < #files then
+-    local next_file = files[file_idx + 1]
+-    update_cursor(history, next_file.node)
+-    history.on_file_select(next_file.data)
+-    return
++  for i = file_idx + 1, #files do
++    local file = files[i]
++    if not is_reviewed(history, file) then
++      select_history_file(history, file)
++      return
++    end
+   end
+ 
+-  -- At boundary: go to next commit
+-  if commit_idx >= #commits and not config.options.diff.cycle_next_file then
+-    vim.api.nvim_echo({ { string.format("Last file (%d of %d commits)", #commits, #commits), "WarningMsg" } }, false, {})
+-    return
+-  end
++  local cycle = config.options.diff.cycle_next_file
++  local search_count = cycle and (#commits - 1) or (#commits - commit_idx)
+ 
+-  local next_commit_idx = commit_idx % #commits + 1
+-  local next_commit = commits[next_commit_idx]
++  local function try_commit(offset)
++    if offset > search_count then
++      if cycle then
++        notify_no_other_unreviewed()
++      else
++        vim.api.nvim_echo({ { "Last unreviewed file", "WarningMsg" } }, false, {})
++      end
++      return
++    end
+ 
+-  local function select_first_file()
+-    local next_files = collect_commit_files(history.tree, next_commit)
+-    if #next_files > 0 then
+-      update_cursor(history, next_files[1].node)
+-      history.on_file_select(next_files[1].data)
++    local next_commit_idx = commit_idx + offset
++    if cycle then
++      next_commit_idx = ((next_commit_idx - 1) % #commits) + 1
+     end
+-  end
++    local next_commit = commits[next_commit_idx]
+ 
+-  if next_commit:is_expanded() then
+-    select_first_file()
+-  elseif history._load_commit_files then
+-    history._load_commit_files(next_commit, select_first_file)
++    local function select_or_continue()
++      if not select_first_unreviewed_file(history, next_commit) then
++        try_commit(offset + 1)
++      end
++    end
++
++    if next_commit:is_expanded() then
++      select_or_continue()
++    elseif history._load_commit_files then
++      history._load_commit_files(next_commit, select_or_continue)
++    else
++      try_commit(offset + 1)
++    end
+   end
++
++  try_commit(1)
+ end
+ 
+--- Navigate to previous file (auto-expands previous commit at boundary)
++-- Navigate to previous file (skips reviewed files and auto-expands previous commit at boundary)
+ function M.navigate_prev(history)
+   local commit_idx, file_idx, commits = find_current_position(history)
+ 
+@@ -584,17 +652,12 @@ function M.navigate_prev(history)
+     return
+   end
+ 
+-  -- No current selection: select last file of last expanded commit
++  -- No current selection: select last unreviewed file from expanded commits.
+   if not commit_idx then
+     for i = #commits, 1, -1 do
+       local commit_node = commits[i]
+-      if commit_node:is_expanded() then
+-        local files = collect_commit_files(history.tree, commit_node)
+-        if #files > 0 then
+-          update_cursor(history, files[#files].node)
+-          history.on_file_select(files[#files].data)
+-          return
+-        end
++      if commit_node:is_expanded() and select_last_unreviewed_file(history, commit_node) then
++        return
+       end
+     end
+     vim.notify("No files in history", vim.log.levels.WARN)
+@@ -604,36 +667,49 @@ function M.navigate_prev(history)
+   local current_commit = commits[commit_idx]
+   local files = collect_commit_files(history.tree, current_commit)
+ 
+-  -- Not at boundary: go to previous file in same commit
+-  if file_idx > 1 then
+-    local prev_file = files[file_idx - 1]
+-    update_cursor(history, prev_file.node)
+-    history.on_file_select(prev_file.data)
+-    return
++  for i = file_idx - 1, 1, -1 do
++    local file = files[i]
++    if not is_reviewed(history, file) then
++      select_history_file(history, file)
++      return
++    end
+   end
+ 
+-  -- At boundary: go to previous commit
+-  if commit_idx <= 1 and not config.options.diff.cycle_next_file then
+-    vim.api.nvim_echo({ { string.format("First file (1 of %d commits)", #commits), "WarningMsg" } }, false, {})
+-    return
+-  end
++  local cycle = config.options.diff.cycle_next_file
++  local search_count = cycle and (#commits - 1) or (commit_idx - 1)
+ 
+-  local prev_commit_idx = (commit_idx - 2) % #commits + 1
+-  local prev_commit = commits[prev_commit_idx]
++  local function try_commit(offset)
++    if offset > search_count then
++      if cycle then
++        notify_no_other_unreviewed()
++      else
++        vim.api.nvim_echo({ { "First unreviewed file", "WarningMsg" } }, false, {})
++      end
++      return
++    end
+ 
+-  local function select_last_file()
+-    local prev_files = collect_commit_files(history.tree, prev_commit)
+-    if #prev_files > 0 then
+-      update_cursor(history, prev_files[#prev_files].node)
+-      history.on_file_select(prev_files[#prev_files].data)
++    local prev_commit_idx = commit_idx - offset
++    if cycle then
++      prev_commit_idx = ((prev_commit_idx - 1) % #commits) + 1
+     end
+-  end
++    local prev_commit = commits[prev_commit_idx]
+ 
+-  if prev_commit:is_expanded() then
+-    select_last_file()
+-  elseif history._load_commit_files then
+-    history._load_commit_files(prev_commit, select_last_file)
++    local function select_or_continue()
++      if not select_last_unreviewed_file(history, prev_commit) then
++        try_commit(offset + 1)
++      end
++    end
++
++    if prev_commit:is_expanded() then
++      select_or_continue()
++    elseif history._load_commit_files then
++      history._load_commit_files(prev_commit, select_or_continue)
++    else
++      try_commit(offset + 1)
++    end
+   end
++
++  try_commit(1)
+ end
+ 
+ -- Get all commit nodes from tree (for navigation in single-file mode)
+@@ -651,6 +727,16 @@ function M.get_all_commits(tree)
+   return commits
+ end
+ 
++local function select_commit(history, commit)
++  set_history_cursor(history, commit.node)
++  local file_path = commit.data.file_path or history.opts.file_path
++  history.on_file_select({
++    path = file_path,
++    commit_hash = commit.data.hash,
++    git_root = history.git_root,
++  })
++end
++
+ -- Navigate to next commit (single-file history mode)
+ function M.navigate_next_commit(history)
+   local all_commits = M.get_all_commits(history.tree)
+@@ -659,19 +745,20 @@ function M.navigate_next_commit(history)
+     return
+   end
+ 
++  if not has_unreviewed(history, all_commits) then
++    notify_all_reviewed()
++    return
++  end
++
+   local current_commit = history.current_commit
+ 
+   if not current_commit then
+-    -- Select first commit
+-    local first_commit = all_commits[1]
+-    local file_path = first_commit.data.file_path or history.opts.file_path
+-    local file_data = {
+-      path = file_path,
+-      commit_hash = first_commit.data.hash,
+-      git_root = history.git_root,
+-    }
+-    history.on_file_select(file_data)
+-    return
++    for _, commit in ipairs(all_commits) do
++      if not is_reviewed(history, commit) then
++        select_commit(history, commit)
++        return
++      end
++    end
+   end
+ 
+   -- Find current index
+@@ -683,30 +770,35 @@ function M.navigate_next_commit(history)
+     end
+   end
+ 
+-  if current_index >= #all_commits and not config.options.diff.cycle_next_file then
+-    vim.api.nvim_echo({ { string.format("Last commit (%d of %d)", #all_commits, #all_commits), "WarningMsg" } }, false, {})
+-    return
++  if current_index == 0 then
++    for _, commit in ipairs(all_commits) do
++      if not is_reviewed(history, commit) then
++        select_commit(history, commit)
++        return
++      end
++    end
+   end
+ 
+-  local next_index = current_index % #all_commits + 1
+-  local next_commit = all_commits[next_index]
+-
+-  -- Update cursor position in history panel
+-  local current_win = vim.api.nvim_get_current_win()
+-  if vim.api.nvim_win_is_valid(history.winid) then
+-    vim.api.nvim_set_current_win(history.winid)
+-    vim.api.nvim_win_set_cursor(history.winid, { next_commit.node._line or 1, 0 })
+-    vim.api.nvim_set_current_win(current_win)
++  local cycle = config.options.diff.cycle_next_file
++  local search_count = cycle and (#all_commits - 1) or (#all_commits - current_index)
++  for offset = 1, search_count do
++    local index = current_index + offset
++    if cycle then
++      index = ((index - 1) % #all_commits) + 1
++    end
++    local commit = all_commits[index]
++    if commit and not is_reviewed(history, commit) then
++      vim.api.nvim_echo({}, false, {})
++      select_commit(history, commit)
++      return
++    end
+   end
+ 
+-  -- Select file at this commit
+-  local file_path = next_commit.data.file_path or history.opts.file_path
+-  local file_data = {
+-    path = file_path,
+-    commit_hash = next_commit.data.hash,
+-    git_root = history.git_root,
+-  }
+-  history.on_file_select(file_data)
++  if cycle then
++    notify_no_other_unreviewed()
++  else
++    vim.api.nvim_echo({ { "Last unreviewed commit", "WarningMsg" } }, false, {})
++  end
+ end
+ 
+ -- Navigate to previous commit (single-file history mode)
+@@ -717,19 +809,21 @@ function M.navigate_prev_commit(history)
+     return
+   end
+ 
++  if not has_unreviewed(history, all_commits) then
++    notify_all_reviewed()
++    return
++  end
++
+   local current_commit = history.current_commit
+ 
+   if not current_commit then
+-    -- Select last commit
+-    local last_commit = all_commits[#all_commits]
+-    local file_path = last_commit.data.file_path or history.opts.file_path
+-    local file_data = {
+-      path = file_path,
+-      commit_hash = last_commit.data.hash,
+-      git_root = history.git_root,
+-    }
+-    history.on_file_select(file_data)
+-    return
++    for i = #all_commits, 1, -1 do
++      local commit = all_commits[i]
++      if not is_reviewed(history, commit) then
++        select_commit(history, commit)
++        return
++      end
++    end
+   end
+ 
+   local current_index = 0
+@@ -740,34 +834,80 @@ function M.navigate_prev_commit(history)
+     end
+   end
+ 
+-  if current_index <= 1 and not config.options.diff.cycle_next_file then
+-    vim.api.nvim_echo({ { string.format("First commit (1 of %d)", #all_commits), "WarningMsg" } }, false, {})
++  if current_index == 0 then
++    for i = #all_commits, 1, -1 do
++      local commit = all_commits[i]
++      if not is_reviewed(history, commit) then
++        select_commit(history, commit)
++        return
++      end
++    end
++  end
++
++  local cycle = config.options.diff.cycle_next_file
++  local search_count = cycle and (#all_commits - 1) or (current_index - 1)
++  for offset = 1, search_count do
++    local index = current_index - offset
++    if cycle then
++      index = ((index - 1) % #all_commits) + 1
++    end
++    local commit = all_commits[index]
++    if commit and not is_reviewed(history, commit) then
++      vim.api.nvim_echo({}, false, {})
++      select_commit(history, commit)
++      return
++    end
++  end
++
++  if cycle then
++    notify_no_other_unreviewed()
++  else
++    vim.api.nvim_echo({ { "First unreviewed commit", "WarningMsg" } }, false, {})
++  end
++end
++
++-- Toggle reviewed state for the file/commit under the history cursor, or the current selected entry from diff buffers.
++function M.toggle_viewed(history)
++  if not history or not history.tree then
+     return
+   end
+ 
+-  local prev_index = current_index - 2
+-  if prev_index < 0 then
+-    prev_index = #all_commits + prev_index
++  local commit_hash
++  local file_path
++  if history.bufnr and vim.api.nvim_get_current_buf() == history.bufnr then
++    local node = history.tree:get_node()
++    if not node or not node.data then
++      return
++    end
++
++    if node.data.type == "file" then
++      commit_hash = node.data.commit_hash
++      file_path = node.data.path
++    elseif node.data.type == "commit" and history.is_single_file_mode then
++      commit_hash = node.data.hash
++      file_path = node.data.file_path or history.opts.file_path
++    else
++      vim.notify("Mark reviewed is only available for files", vim.log.levels.WARN)
++      return
++    end
++  else
++    commit_hash = history.current_commit
++    file_path = history.current_file
+   end
+-  prev_index = prev_index % #all_commits + 1
+-  local prev_commit = all_commits[prev_index]
+ 
+-  -- Update cursor position in history panel
+-  local current_win = vim.api.nvim_get_current_win()
+-  if vim.api.nvim_win_is_valid(history.winid) then
+-    vim.api.nvim_set_current_win(history.winid)
+-    vim.api.nvim_win_set_cursor(history.winid, { prev_commit.node._line or 1, 0 })
+-    vim.api.nvim_set_current_win(current_win)
++  local key = review_key(commit_hash, file_path)
++  if not key then
++    vim.notify("No file selected", vim.log.levels.WARN)
++    return
+   end
+ 
+-  -- Select file at this commit
+-  local file_path = prev_commit.data.file_path or history.opts.file_path
+-  local file_data = {
+-    path = file_path,
+-    commit_hash = prev_commit.data.hash,
+-    git_root = history.git_root,
+-  }
+-  history.on_file_select(file_data)
++  history.viewed_files = history.viewed_files or {}
++  if history.viewed_files[key] then
++    history.viewed_files[key] = nil
++  else
++    history.viewed_files[key] = true
++  end
++  history.tree:render()
+ end
+ 
+ -- Toggle visibility
+diff --git a/lua/codediff/ui/keymap_help.lua b/lua/codediff/ui/keymap_help.lua
+index 5654fbc..fb58db9 100644
+--- a/lua/codediff/ui/keymap_help.lua
++++ b/lua/codediff/ui/keymap_help.lua
+@@ -57,6 +57,11 @@ local function build_sections(keymaps, is_explorer, is_history, is_conflict)
+     table.insert(view_items, { km.toggle_explorer, "Toggle explorer" })
+     table.insert(view_items, { km.focus_explorer, "Focus explorer" })
+     table.insert(view_items, { km.toggle_stage, "Stage/unstage current file" })
++  end
++  if is_explorer or is_history then
++    table.insert(view_items, { km.toggle_reviewed, "Mark/unmark file as reviewed" })
++  end
++  if is_explorer then
+     table.insert(view_items, { km.stage_hunk, "Stage hunk under cursor" })
+     table.insert(view_items, { km.unstage_hunk, "Unstage hunk under cursor" })
+     table.insert(view_items, { km.discard_hunk, "Discard hunk under cursor" })
+diff --git a/lua/codediff/ui/lifecycle/accessors.lua b/lua/codediff/ui/lifecycle/accessors.lua
+index fe52d68..7de9d55 100644
+--- a/lua/codediff/ui/lifecycle/accessors.lua
++++ b/lua/codediff/ui/lifecycle/accessors.lua
+@@ -320,6 +320,9 @@ function M.set_explorer(tabpage, explorer)
+   end
+ 
+   sess.explorer = explorer
++  if sess.reapply_keymaps then
++    sess.reapply_keymaps()
++  end
+   return true
+ end
+ 
+diff --git a/lua/codediff/ui/view/keymaps.lua b/lua/codediff/ui/view/keymaps.lua
+index d70aeda..56f5af0 100644
+--- a/lua/codediff/ui/view/keymaps.lua
++++ b/lua/codediff/ui/view/keymaps.lua
+@@ -260,6 +260,26 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
+     -- Case 3: Other buffers (history, etc.) - do nothing silently
+   end
+ 
++  -- Helper: Toggle reviewed state for current file (tab-wide)
++  local function toggle_reviewed()
++    if not is_explorer_mode and not is_history_mode then
++      vim.notify("Mark reviewed only available in explorer/history mode", vim.log.levels.WARN)
++      return
++    end
++
++    local panel_obj = lifecycle.get_explorer(tabpage)
++    if not panel_obj then
++      vim.notify("No explorer/history panel found for this tab", vim.log.levels.WARN)
++      return
++    end
++
++    if is_history_mode then
++      require("codediff.ui.history").toggle_viewed(panel_obj)
++    else
++      require("codediff.ui.explorer").toggle_viewed(panel_obj)
++    end
++  end
++
+   -- Helper: Open the current real buffer in the previous tab (or create one before)
+   local function open_in_prev_tab()
+     local session = lifecycle.get_session(tabpage)
+@@ -616,6 +636,10 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
+     end
+   end
+ 
++  if (is_explorer_mode or is_history_mode) and keymaps.toggle_reviewed then
++    lifecycle.set_tab_keymap(tabpage, "n", keymaps.toggle_reviewed, toggle_reviewed, { desc = "Mark/unmark file as reviewed" })
++  end
++
+   -- Help keymap (g?) - show floating window with available keymaps
+   if keymaps.show_help then
+     lifecycle.set_tab_keymap(tabpage, "n", keymaps.show_help, function()
+diff --git a/tests/init.lua b/tests/init.lua
+index e292fbb..8a70e8e 100644
+--- a/tests/init.lua
++++ b/tests/init.lua
+@@ -31,8 +31,12 @@ if vim.fn.isdirectory(plenary_dir) == 0 then
+ end
+ vim.opt.rtp:prepend(plenary_dir)
+ 
+--- Load plugin files (for integration tests that need commands)
+-vim.cmd('runtime! plugin/*.lua plugin/*.vim')
++-- Load this project's plugin files only (for integration tests that need commands).
++-- Avoid `runtime! plugin/*.lua`, which also sources unrelated user plugins on
++-- the runtimepath and can make tests fail depending on the local Neovim setup.
++for _, plugin_file in ipairs(vim.fn.glob(cwd .. "/plugin/*.lua", false, true)) do
++  vim.cmd("source " .. vim.fn.fnameescape(plugin_file))
++end
+ 
+ -- Setup plugin
+ require("codediff").setup()
+-- 
+2.53.0
+
