@@ -77,7 +77,7 @@ function M.build_tree_nodes(commits, git_root, opts)
         file_count = commit.files_changed,
         git_root = git_root,
         files_loaded = false,
-        file_path = commit.file_path,
+        file_path = commit.file_path or opts.file_path,
         max_files_width = max_files_width,
         max_ins_width = max_ins_width,
         max_del_width = max_del_width,
@@ -137,9 +137,10 @@ function M.create(commits, git_root, tabpage, width, opts)
   split:mount()
   pcall(vim.api.nvim_buf_set_name, split.bufnr, "CodeDiff History [" .. tabpage .. "]")
 
-  -- Track selected commit and file
+  -- Track selected commit/file and reviewed files for highlighting
   local selected_commit = nil
   local selected_file = nil
+  local viewed_files = {}
 
   -- Check if single file mode
   local is_single_file_mode = opts.file_path and opts.file_path ~= ""
@@ -161,7 +162,7 @@ function M.create(commits, git_root, tabpage, width, opts)
       if split.winid and vim.api.nvim_win_is_valid(split.winid) then
         current_width = vim.api.nvim_win_get_width(split.winid)
       end
-      return nodes_module.prepare_node(node, current_width, selected_commit, selected_file, is_single_file_mode)
+      return nodes_module.prepare_node(node, current_width, selected_commit, selected_file, is_single_file_mode, viewed_files)
     end,
   })
 
@@ -180,6 +181,7 @@ function M.create(commits, git_root, tabpage, width, opts)
     current_commit = nil,
     current_file = nil,
     current_selection = nil,
+    viewed_files = viewed_files,
     is_hidden = false,
     is_single_file_mode = is_single_file_mode,
   }
@@ -441,6 +443,50 @@ function M.rerender_current(history)
   return false
 end
 
+local function review_key(commit_hash, file_path)
+  if not commit_hash or not file_path then
+    return nil
+  end
+  return commit_hash .. ":" .. file_path
+end
+
+local function is_reviewed(history, item)
+  local data = item and item.data
+  local key = data and review_key(data.commit_hash or data.hash, data.path or data.file_path or history.opts.file_path)
+  return key and history.viewed_files and history.viewed_files[key]
+end
+
+local function has_unreviewed(history, items)
+  for _, item in ipairs(items) do
+    if not is_reviewed(history, item) then
+      return true
+    end
+  end
+  return false
+end
+
+local function notify_all_reviewed()
+  vim.notify("All files have been reviewed", vim.log.levels.INFO)
+end
+
+local function notify_no_other_unreviewed()
+  vim.notify("No other unreviewed files", vim.log.levels.INFO)
+end
+
+local function set_history_cursor(history, node)
+  local current_win = vim.api.nvim_get_current_win()
+  if history.winid and vim.api.nvim_win_is_valid(history.winid) then
+    vim.api.nvim_set_current_win(history.winid)
+    vim.api.nvim_win_set_cursor(history.winid, { node._line or 1, 0 })
+    vim.api.nvim_set_current_win(current_win)
+  end
+end
+
+local function select_history_file(history, item)
+  set_history_cursor(history, item.node)
+  history.on_file_select(item.data)
+end
+
 -- Collect all files from a commit node (handles tree mode with nested directories)
 local function collect_commit_files(tree, commit_node)
   local files = {}
@@ -478,16 +524,6 @@ function M.get_all_files(tree)
   return files
 end
 
--- Update cursor position in history panel
-local function update_cursor(history, node)
-  local current_win = vim.api.nvim_get_current_win()
-  if vim.api.nvim_win_is_valid(history.winid) then
-    vim.api.nvim_set_current_win(history.winid)
-    vim.api.nvim_win_set_cursor(history.winid, { node._line or 1, 0 })
-    vim.api.nvim_set_current_win(current_win)
-  end
-end
-
 -- Find current position: returns commit_idx, file_idx, commits list
 local function find_current_position(history)
   local commits = {}
@@ -515,7 +551,31 @@ local function find_current_position(history)
   return nil, nil, commits
 end
 
--- Navigate to next file (auto-expands next commit at boundary)
+local function select_first_unreviewed_file(history, commit_node)
+  for _, file in ipairs(collect_commit_files(history.tree, commit_node)) do
+    if not is_reviewed(history, file) then
+      vim.api.nvim_echo({}, false, {})
+      select_history_file(history, file)
+      return true
+    end
+  end
+  return false
+end
+
+local function select_last_unreviewed_file(history, commit_node)
+  local files = collect_commit_files(history.tree, commit_node)
+  for i = #files, 1, -1 do
+    local file = files[i]
+    if not is_reviewed(history, file) then
+      vim.api.nvim_echo({}, false, {})
+      select_history_file(history, file)
+      return true
+    end
+  end
+  return false
+end
+
+-- Navigate to next file (skips reviewed files and auto-expands next commit at boundary)
 function M.navigate_next(history)
   local commit_idx, file_idx, commits = find_current_position(history)
 
@@ -524,16 +584,11 @@ function M.navigate_next(history)
     return
   end
 
-  -- No current selection: select first file of first expanded commit
+  -- No current selection: select first unreviewed file from expanded commits.
   if not commit_idx then
     for _, commit_node in ipairs(commits) do
-      if commit_node:is_expanded() then
-        local files = collect_commit_files(history.tree, commit_node)
-        if #files > 0 then
-          update_cursor(history, files[1].node)
-          history.on_file_select(files[1].data)
-          return
-        end
+      if commit_node:is_expanded() and select_first_unreviewed_file(history, commit_node) then
+        return
       end
     end
     vim.notify("No files in history", vim.log.levels.WARN)
@@ -543,39 +598,52 @@ function M.navigate_next(history)
   local current_commit = commits[commit_idx]
   local files = collect_commit_files(history.tree, current_commit)
 
-  -- Not at boundary: go to next file in same commit
-  if file_idx < #files then
-    local next_file = files[file_idx + 1]
-    update_cursor(history, next_file.node)
-    history.on_file_select(next_file.data)
-    return
-  end
-
-  -- At boundary: go to next commit
-  if commit_idx >= #commits and not config.options.diff.cycle_next_file then
-    vim.api.nvim_echo({ { string.format("Last file (%d of %d commits)", #commits, #commits), "WarningMsg" } }, false, {})
-    return
-  end
-
-  local next_commit_idx = commit_idx % #commits + 1
-  local next_commit = commits[next_commit_idx]
-
-  local function select_first_file()
-    local next_files = collect_commit_files(history.tree, next_commit)
-    if #next_files > 0 then
-      update_cursor(history, next_files[1].node)
-      history.on_file_select(next_files[1].data)
+  for i = file_idx + 1, #files do
+    local file = files[i]
+    if not is_reviewed(history, file) then
+      select_history_file(history, file)
+      return
     end
   end
 
-  if next_commit:is_expanded() then
-    select_first_file()
-  elseif history._load_commit_files then
-    history._load_commit_files(next_commit, select_first_file)
+  local cycle = config.options.diff.cycle_next_file
+  local search_count = cycle and (#commits - 1) or (#commits - commit_idx)
+
+  local function try_commit(offset)
+    if offset > search_count then
+      if cycle then
+        notify_no_other_unreviewed()
+      else
+        vim.api.nvim_echo({ { "Last unreviewed file", "WarningMsg" } }, false, {})
+      end
+      return
+    end
+
+    local next_commit_idx = commit_idx + offset
+    if cycle then
+      next_commit_idx = ((next_commit_idx - 1) % #commits) + 1
+    end
+    local next_commit = commits[next_commit_idx]
+
+    local function select_or_continue()
+      if not select_first_unreviewed_file(history, next_commit) then
+        try_commit(offset + 1)
+      end
+    end
+
+    if next_commit:is_expanded() then
+      select_or_continue()
+    elseif history._load_commit_files then
+      history._load_commit_files(next_commit, select_or_continue)
+    else
+      try_commit(offset + 1)
+    end
   end
+
+  try_commit(1)
 end
 
--- Navigate to previous file (auto-expands previous commit at boundary)
+-- Navigate to previous file (skips reviewed files and auto-expands previous commit at boundary)
 function M.navigate_prev(history)
   local commit_idx, file_idx, commits = find_current_position(history)
 
@@ -584,17 +652,12 @@ function M.navigate_prev(history)
     return
   end
 
-  -- No current selection: select last file of last expanded commit
+  -- No current selection: select last unreviewed file from expanded commits.
   if not commit_idx then
     for i = #commits, 1, -1 do
       local commit_node = commits[i]
-      if commit_node:is_expanded() then
-        local files = collect_commit_files(history.tree, commit_node)
-        if #files > 0 then
-          update_cursor(history, files[#files].node)
-          history.on_file_select(files[#files].data)
-          return
-        end
+      if commit_node:is_expanded() and select_last_unreviewed_file(history, commit_node) then
+        return
       end
     end
     vim.notify("No files in history", vim.log.levels.WARN)
@@ -604,36 +667,49 @@ function M.navigate_prev(history)
   local current_commit = commits[commit_idx]
   local files = collect_commit_files(history.tree, current_commit)
 
-  -- Not at boundary: go to previous file in same commit
-  if file_idx > 1 then
-    local prev_file = files[file_idx - 1]
-    update_cursor(history, prev_file.node)
-    history.on_file_select(prev_file.data)
-    return
-  end
-
-  -- At boundary: go to previous commit
-  if commit_idx <= 1 and not config.options.diff.cycle_next_file then
-    vim.api.nvim_echo({ { string.format("First file (1 of %d commits)", #commits), "WarningMsg" } }, false, {})
-    return
-  end
-
-  local prev_commit_idx = (commit_idx - 2) % #commits + 1
-  local prev_commit = commits[prev_commit_idx]
-
-  local function select_last_file()
-    local prev_files = collect_commit_files(history.tree, prev_commit)
-    if #prev_files > 0 then
-      update_cursor(history, prev_files[#prev_files].node)
-      history.on_file_select(prev_files[#prev_files].data)
+  for i = file_idx - 1, 1, -1 do
+    local file = files[i]
+    if not is_reviewed(history, file) then
+      select_history_file(history, file)
+      return
     end
   end
 
-  if prev_commit:is_expanded() then
-    select_last_file()
-  elseif history._load_commit_files then
-    history._load_commit_files(prev_commit, select_last_file)
+  local cycle = config.options.diff.cycle_next_file
+  local search_count = cycle and (#commits - 1) or (commit_idx - 1)
+
+  local function try_commit(offset)
+    if offset > search_count then
+      if cycle then
+        notify_no_other_unreviewed()
+      else
+        vim.api.nvim_echo({ { "First unreviewed file", "WarningMsg" } }, false, {})
+      end
+      return
+    end
+
+    local prev_commit_idx = commit_idx - offset
+    if cycle then
+      prev_commit_idx = ((prev_commit_idx - 1) % #commits) + 1
+    end
+    local prev_commit = commits[prev_commit_idx]
+
+    local function select_or_continue()
+      if not select_last_unreviewed_file(history, prev_commit) then
+        try_commit(offset + 1)
+      end
+    end
+
+    if prev_commit:is_expanded() then
+      select_or_continue()
+    elseif history._load_commit_files then
+      history._load_commit_files(prev_commit, select_or_continue)
+    else
+      try_commit(offset + 1)
+    end
   end
+
+  try_commit(1)
 end
 
 -- Get all commit nodes from tree (for navigation in single-file mode)
@@ -651,6 +727,16 @@ function M.get_all_commits(tree)
   return commits
 end
 
+local function select_commit(history, commit)
+  set_history_cursor(history, commit.node)
+  local file_path = commit.data.file_path or history.opts.file_path
+  history.on_file_select({
+    path = file_path,
+    commit_hash = commit.data.hash,
+    git_root = history.git_root,
+  })
+end
+
 -- Navigate to next commit (single-file history mode)
 function M.navigate_next_commit(history)
   local all_commits = M.get_all_commits(history.tree)
@@ -659,19 +745,20 @@ function M.navigate_next_commit(history)
     return
   end
 
+  if not has_unreviewed(history, all_commits) then
+    notify_all_reviewed()
+    return
+  end
+
   local current_commit = history.current_commit
 
   if not current_commit then
-    -- Select first commit
-    local first_commit = all_commits[1]
-    local file_path = first_commit.data.file_path or history.opts.file_path
-    local file_data = {
-      path = file_path,
-      commit_hash = first_commit.data.hash,
-      git_root = history.git_root,
-    }
-    history.on_file_select(file_data)
-    return
+    for _, commit in ipairs(all_commits) do
+      if not is_reviewed(history, commit) then
+        select_commit(history, commit)
+        return
+      end
+    end
   end
 
   -- Find current index
@@ -683,30 +770,35 @@ function M.navigate_next_commit(history)
     end
   end
 
-  if current_index >= #all_commits and not config.options.diff.cycle_next_file then
-    vim.api.nvim_echo({ { string.format("Last commit (%d of %d)", #all_commits, #all_commits), "WarningMsg" } }, false, {})
-    return
+  if current_index == 0 then
+    for _, commit in ipairs(all_commits) do
+      if not is_reviewed(history, commit) then
+        select_commit(history, commit)
+        return
+      end
+    end
   end
 
-  local next_index = current_index % #all_commits + 1
-  local next_commit = all_commits[next_index]
-
-  -- Update cursor position in history panel
-  local current_win = vim.api.nvim_get_current_win()
-  if vim.api.nvim_win_is_valid(history.winid) then
-    vim.api.nvim_set_current_win(history.winid)
-    vim.api.nvim_win_set_cursor(history.winid, { next_commit.node._line or 1, 0 })
-    vim.api.nvim_set_current_win(current_win)
+  local cycle = config.options.diff.cycle_next_file
+  local search_count = cycle and (#all_commits - 1) or (#all_commits - current_index)
+  for offset = 1, search_count do
+    local index = current_index + offset
+    if cycle then
+      index = ((index - 1) % #all_commits) + 1
+    end
+    local commit = all_commits[index]
+    if commit and not is_reviewed(history, commit) then
+      vim.api.nvim_echo({}, false, {})
+      select_commit(history, commit)
+      return
+    end
   end
 
-  -- Select file at this commit
-  local file_path = next_commit.data.file_path or history.opts.file_path
-  local file_data = {
-    path = file_path,
-    commit_hash = next_commit.data.hash,
-    git_root = history.git_root,
-  }
-  history.on_file_select(file_data)
+  if cycle then
+    notify_no_other_unreviewed()
+  else
+    vim.api.nvim_echo({ { "Last unreviewed commit", "WarningMsg" } }, false, {})
+  end
 end
 
 -- Navigate to previous commit (single-file history mode)
@@ -717,19 +809,21 @@ function M.navigate_prev_commit(history)
     return
   end
 
+  if not has_unreviewed(history, all_commits) then
+    notify_all_reviewed()
+    return
+  end
+
   local current_commit = history.current_commit
 
   if not current_commit then
-    -- Select last commit
-    local last_commit = all_commits[#all_commits]
-    local file_path = last_commit.data.file_path or history.opts.file_path
-    local file_data = {
-      path = file_path,
-      commit_hash = last_commit.data.hash,
-      git_root = history.git_root,
-    }
-    history.on_file_select(file_data)
-    return
+    for i = #all_commits, 1, -1 do
+      local commit = all_commits[i]
+      if not is_reviewed(history, commit) then
+        select_commit(history, commit)
+        return
+      end
+    end
   end
 
   local current_index = 0
@@ -740,34 +834,80 @@ function M.navigate_prev_commit(history)
     end
   end
 
-  if current_index <= 1 and not config.options.diff.cycle_next_file then
-    vim.api.nvim_echo({ { string.format("First commit (1 of %d)", #all_commits), "WarningMsg" } }, false, {})
+  if current_index == 0 then
+    for i = #all_commits, 1, -1 do
+      local commit = all_commits[i]
+      if not is_reviewed(history, commit) then
+        select_commit(history, commit)
+        return
+      end
+    end
+  end
+
+  local cycle = config.options.diff.cycle_next_file
+  local search_count = cycle and (#all_commits - 1) or (current_index - 1)
+  for offset = 1, search_count do
+    local index = current_index - offset
+    if cycle then
+      index = ((index - 1) % #all_commits) + 1
+    end
+    local commit = all_commits[index]
+    if commit and not is_reviewed(history, commit) then
+      vim.api.nvim_echo({}, false, {})
+      select_commit(history, commit)
+      return
+    end
+  end
+
+  if cycle then
+    notify_no_other_unreviewed()
+  else
+    vim.api.nvim_echo({ { "First unreviewed commit", "WarningMsg" } }, false, {})
+  end
+end
+
+-- Toggle reviewed state for the file/commit under the history cursor, or the current selected entry from diff buffers.
+function M.toggle_viewed(history)
+  if not history or not history.tree then
     return
   end
 
-  local prev_index = current_index - 2
-  if prev_index < 0 then
-    prev_index = #all_commits + prev_index
-  end
-  prev_index = prev_index % #all_commits + 1
-  local prev_commit = all_commits[prev_index]
+  local commit_hash
+  local file_path
+  if history.bufnr and vim.api.nvim_get_current_buf() == history.bufnr then
+    local node = history.tree:get_node()
+    if not node or not node.data then
+      return
+    end
 
-  -- Update cursor position in history panel
-  local current_win = vim.api.nvim_get_current_win()
-  if vim.api.nvim_win_is_valid(history.winid) then
-    vim.api.nvim_set_current_win(history.winid)
-    vim.api.nvim_win_set_cursor(history.winid, { prev_commit.node._line or 1, 0 })
-    vim.api.nvim_set_current_win(current_win)
+    if node.data.type == "file" then
+      commit_hash = node.data.commit_hash
+      file_path = node.data.path
+    elseif node.data.type == "commit" and history.is_single_file_mode then
+      commit_hash = node.data.hash
+      file_path = node.data.file_path or history.opts.file_path
+    else
+      vim.notify("Mark reviewed is only available for files", vim.log.levels.WARN)
+      return
+    end
+  else
+    commit_hash = history.current_commit
+    file_path = history.current_file
   end
 
-  -- Select file at this commit
-  local file_path = prev_commit.data.file_path or history.opts.file_path
-  local file_data = {
-    path = file_path,
-    commit_hash = prev_commit.data.hash,
-    git_root = history.git_root,
-  }
-  history.on_file_select(file_data)
+  local key = review_key(commit_hash, file_path)
+  if not key then
+    vim.notify("No file selected", vim.log.levels.WARN)
+    return
+  end
+
+  history.viewed_files = history.viewed_files or {}
+  if history.viewed_files[key] then
+    history.viewed_files[key] = nil
+  else
+    history.viewed_files[key] = true
+  end
+  history.tree:render()
 end
 
 -- Toggle visibility

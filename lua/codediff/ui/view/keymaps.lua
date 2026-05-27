@@ -260,6 +260,26 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
     -- Case 3: Other buffers (history, etc.) - do nothing silently
   end
 
+  -- Helper: Toggle reviewed state for current file (tab-wide)
+  local function toggle_reviewed()
+    if not is_explorer_mode and not is_history_mode then
+      vim.notify("Mark reviewed only available in explorer/history mode", vim.log.levels.WARN)
+      return
+    end
+
+    local panel_obj = lifecycle.get_explorer(tabpage)
+    if not panel_obj then
+      vim.notify("No explorer/history panel found for this tab", vim.log.levels.WARN)
+      return
+    end
+
+    if is_history_mode then
+      require("codediff.ui.history").toggle_viewed(panel_obj)
+    else
+      require("codediff.ui.explorer").toggle_viewed(panel_obj)
+    end
+  end
+
   -- Helper: Open the current real buffer in the previous tab (or create one before)
   local function open_in_prev_tab()
     local session = lifecycle.get_session(tabpage)
@@ -614,6 +634,10 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
     if toggle_stage_key then
       lifecycle.set_tab_keymap(tabpage, "n", toggle_stage_key, toggle_stage, { desc = "Toggle stage/unstage" })
     end
+  end
+
+  if (is_explorer_mode or is_history_mode) and keymaps.toggle_reviewed then
+    lifecycle.set_tab_keymap(tabpage, "n", keymaps.toggle_reviewed, toggle_reviewed, { desc = "Mark/unmark file as reviewed" })
   end
 
   -- Help keymap (g?) - show floating window with available keymaps
