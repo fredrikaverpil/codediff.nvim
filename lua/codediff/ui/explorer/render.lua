@@ -303,7 +303,13 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
         local sess = lifecycle.get_session(tabpage)
         local is_inline = sess and sess.layout == "inline"
 
-        if base_revision and target_revision and target_revision ~= "WORKING" then
+        -- Whenever the explorer is anchored to a base_revision (single-rev
+        -- like `:CodeDiff HEAD~5` OR revision-revision like `:CodeDiff A B`),
+        -- the deleted file's content lives at base_revision; reading from
+        -- HEAD/:0 yields nothing because the file is already gone there.
+        -- The HEAD/:0 branch is only correct for plain explorer mode
+        -- (no base_revision). Fixes #390.
+        if base_revision then
           if is_inline then
             require("codediff.ui.view.inline_view").show_single_file(tabpage, file_path, {
               revision = base_revision,
