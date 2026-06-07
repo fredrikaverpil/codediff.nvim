@@ -1,0 +1,126 @@
+From 25707eef0e877de1e31bfed540b50b3ef6d760fe Mon Sep 17 00:00:00 2001
+From: Fredrik Averpil <fredrik.averpil@gmail.com>
+Date: Tue, 26 May 2026 08:13:56 +0200
+Subject: [PATCH 1/3] docs: document maintained fork workflow
+
+---
+ README.md | 96 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 96 insertions(+)
+
+diff --git a/README.md b/README.md
+index 32d94d3..4c607ff 100644
+--- a/README.md
++++ b/README.md
+@@ -4,6 +4,11 @@
+ 
+ A Neovim plugin that provides VSCode-style diff rendering with two-tier highlighting, supporting both side-by-side and inline (unified) layouts.
+ 
++> [!IMPORTANT]
++> This repository is a personal, maintained fork of [`esmuellert/codediff.nvim`](https://github.com/esmuellert/codediff.nvim).
++> It tracks the upstream `main` branch and carries a patch stack for changes I use locally while upstream pull requests are pending or not accepted.
++> If you want the canonical project, use the upstream repository.
++
+ <div align="center">
+ 
+ ![VSCode-style diff view showing side-by-side comparison with two-tier highlighting](https://github.com/user-attachments/assets/473ae319-40ac-40e4-958b-a0f2525d1f94)
+@@ -18,6 +23,97 @@ https://github.com/user-attachments/assets/64c41f01-dffe-4318-bce4-16eec8de356e
+ 
+ </div>
+ 
++## Maintaining this fork
++
++This fork uses `origin/main` as the branch I install from my Neovim configuration. The branch is periodically rebased on top of `upstream/main`, then my local patch stack is re-applied.
++
++Current upstream remote:
++
++```bash
++git remote add upstream https://github.com/esmuellert/codediff.nvim.git
++```
++
++Refresh the local view of both repositories:
++
++```bash
++git fetch upstream origin
++```
++
++Rebuild this fork's `main` branch from upstream and apply the maintained patches:
++
++```bash
++git switch main
++git reset --hard upstream/main
++
++git cherry-pick origin/feat/history-auto-expand-commits
++git cherry-pick origin/feat/mark-as-viewed
++```
++
++The Git commits on `main` are the source of truth. Files in `patches/` are an exported backup/documentation artifact. Keep that export in a final commit at the tip of `main`, separate from the functional patch commits:
++
++```text
++upstream/main
++  + docs: document maintained fork workflow
++  + feat(history): auto-expand commits on file navigation boundary
++  + feat(explorer): add reviewed file markers
++  + docs: update patch exports  # generated patches only, always HEAD
++```
++
++Regenerate and commit the patch export after rebuilding or changing the stack:
++
++```bash
++rm -f patches/*.patch
++git format-patch upstream/main..HEAD -o patches
++git add patches
++git commit -m "docs: update patch exports"
++
++git push --force-with-lease origin main
++```
++
++If the `docs: update patch exports` commit already exists at `HEAD` and you want to update the stack beneath it, first move that generated commit out of the way while keeping its files in the worktree:
++
++```bash
++git reset --soft HEAD~1
++git restore --staged patches
++
++# Rebase/cherry-pick/edit the functional patch stack here.
++
++rm -f patches/*.patch
++git format-patch upstream/main..HEAD -o patches
++git add patches
++git commit -m "docs: update patch exports"
++```
++
++Equivalently, when only refreshing the export while the export commit is still at `HEAD`, format the real stack with `HEAD~1` so the generated export commit does not export itself:
++
++```bash
++rm -f patches/*.patch
++git format-patch upstream/main..HEAD~1 -o patches
++git add patches
++git commit --amend --no-edit
++```
++
++For small upstream syncs, rebasing the functional commits can also work:
++
++```bash
++git fetch upstream origin
++git switch main
++# Drop or exclude the final patch-export commit before rebasing the functional stack.
++git rebase upstream/main
++```
++
++Enable Git's conflict-resolution reuse to make repeated rebases/cherry-picks easier:
++
++```bash
++git config rerere.enabled true
++```
++
++The exported patches can be re-applied with:
++
++```bash
++git am -3 patches/*.patch
++```
++
+ ## Features
+ 
+ - **Two-tier highlighting system**:
+-- 
+2.54.0
+
