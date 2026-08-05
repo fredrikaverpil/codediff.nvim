@@ -15,6 +15,7 @@ M.navigate_next = actions.navigate_next
 M.navigate_prev = actions.navigate_prev
 M.toggle_visibility = actions.toggle_visibility
 M.toggle_view_mode = actions.toggle_view_mode
+M.toggle_reviewed = actions.toggle_reviewed
 M.toggle_stage_entry = actions.toggle_stage_entry
 M.toggle_stage_file = actions.toggle_stage_file
 M.toggle_staged_view = actions.toggle_staged_view

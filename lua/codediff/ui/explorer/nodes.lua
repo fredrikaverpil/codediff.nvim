@@ -7,6 +7,7 @@ local config = require("codediff.config")
 local line_layout = require("codediff.ui.explorer.line_layout")
 local line_stats = require("codediff.ui.explorer.line_stats")
 local default_formatters = require("codediff.ui.explorer.formatters")
+local reviewed = require("codediff.ui.reviewed")
 
 -- Merge artifact patterns (created by git mergetool)
 local MERGE_ARTIFACT_PATTERNS = {
@@ -323,13 +324,14 @@ local function folder_context(node, data, explorer_config)
   }
 end
 
-local function file_context(node, data, explorer_config)
+local function file_context(node, data, explorer_config, reviewed_files)
   local indent, indent_hl = get_indent(node, data, explorer_config)
   local full_path = data.path or node.text
   local filename = full_path:match("([^/]+)$") or full_path
   local directory = explorer_config.view_mode == "tree" and "" or full_path:sub(1, -(#filename + 1))
   return {
     path = full_path,
+    reviewed = reviewed.is_marked(reviewed_files, data.group, data.path),
     filename = filename,
     directory = directory,
     old_path = data.old_path,
@@ -353,7 +355,8 @@ local function selected_background(is_selected)
 end
 
 -- Prepare node for rendering (format display)
-function M.prepare_node(node, max_width, selected_path, selected_group)
+--- @param reviewed_files table<string, boolean>|nil Rows marked reviewed this session
+function M.prepare_node(node, max_width, selected_path, selected_group, reviewed_files)
   local data = node.data or {}
   local explorer_config = config.options.explorer
   -- Formatters are pluggable per node type; nil in config means "use the
@@ -370,7 +373,7 @@ function M.prepare_node(node, max_width, selected_path, selected_group)
 
   local is_selected = data.path == selected_path and data.group == selected_group
   local fmt = user_formatters.file or default_formatters.file
-  return line_layout.render(fmt(file_context(node, data, explorer_config)), max_width, selected_background(is_selected), explorer_config.ellipsis)
+  return line_layout.render(fmt(file_context(node, data, explorer_config, reviewed_files)), max_width, selected_background(is_selected), explorer_config.ellipsis)
 end
 
 return M

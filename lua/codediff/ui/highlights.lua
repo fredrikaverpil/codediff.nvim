@@ -228,6 +228,12 @@ function M.setup()
     default = true,
   })
 
+  -- Explorer/history rows marked as reviewed
+  vim.api.nvim_set_hl(0, "CodeDiffExplorerReviewed", {
+    link = "DiagnosticOk",
+    default = true,
+  })
+
   -- Explorer indent markers (tree view)
   vim.api.nvim_set_hl(0, "NeoTreeIndentMarker", {
     link = "Comment",

@@ -119,6 +119,15 @@ git am -3 patches/*.patch
 - **Focused navigation:** Move between files and hunks, fold unchanged code, and track moved blocks.
 - **Conflict resolution:** Resolve merge conflicts per block or across the whole file.
 - **Editor-native context:** Keep Tree-sitter syntax highlighting in revision buffers.
+- **Reviewed file markers:** Mark files you have already looked at with `v`; marked rows get a `✓` and `]f`/`[f` skip past them.
+
+### Reviewed file markers
+
+In the explorer and history panels, `v` (`keymaps.explorer.toggle_reviewed` / `keymaps.history.toggle_reviewed`) marks the file under the cursor as reviewed. The diff panes keep `v` for Visual mode.
+
+A marked row is tinted with `CodeDiffExplorerReviewed` (linked to `DiagnosticOk` by default) and prefixed with `✓`, and `]f`/`[f` walk straight past it — so repeatedly pressing `]f` visits only what is left to review. When every file is marked, navigation says so instead of moving.
+
+Marks are per-tab and last only as long as the diff session: nothing is written to disk, and reopening the diff starts a fresh pass. In file-history mode with a single file, commits are what gets marked, since each commit is one thing to review.
 
 ## Installation
 
@@ -357,6 +366,7 @@ Both methods automatically place the library in the plugin root directory.
         hover = "K",        -- Show full path
         refresh = "R",      -- Refresh git status
         toggle_view_mode = "i",  -- Toggle between 'list' and 'tree' views
+        toggle_reviewed = "v",   -- Mark/unmark file under cursor as reviewed
         stage_all = "S",    -- Stage all files
         unstage_all = "U",  -- Unstage all files
         restore = "X",      -- Discard changes (restore file)
@@ -376,6 +386,7 @@ Both methods automatically place the library in the plugin root directory.
         select = "<CR>",    -- Select commit/file or toggle expand
         toggle_view_mode = "i",  -- Toggle between 'list' and 'tree' views
         refresh = "R",      -- Refresh history (re-fetch commits)
+        toggle_reviewed = "v",   -- Mark/unmark file (or single-file commit) under cursor as reviewed
         -- Fold keymaps (Vim-style, apply to directory nodes only)
         fold_open = "zo",           -- Open fold (expand current node)
         fold_open_recursive = "zO", -- Open fold recursively (expand all descendants)
@@ -449,7 +460,7 @@ A layout contains `left` and `right` lists of regions and an optional `min_gap` 
 
 Each segment is `{ text = string, hl? = highlight }`. `hl` accepts a Neovim highlight group, a `#RGB`/`#RRGGBB` foreground color, or a highlight definition such as `{ fg = "#3fb950", bold = true }`. Omitted highlights use `Normal`; selected file rows retain their selection background.
 
-File contexts contain `path`, `filename`, `directory`, `old_path`, `group`, `stats`, `status`, `status_hl`, `status_right_margin`, `indent`, `indent_hl`, `icon`, and `icon_hl`. Folder contexts contain `name`, `path`, `group`, `file_count`, `stats`, `files`, `indent`, `indent_hl`, `icon`, `icon_hl`, and `expanded`. Group contexts contain `name`, `label`, `file_count`, `stats`, `files`, and `expanded`. `stats` is `nil` when line statistics are disabled.
+File contexts contain `path`, `filename`, `directory`, `old_path`, `group`, `reviewed`, `stats`, `status`, `status_hl`, `status_right_margin`, `indent`, `indent_hl`, `icon`, and `icon_hl`. Folder contexts contain `name`, `path`, `group`, `file_count`, `stats`, `files`, `indent`, `indent_hl`, `icon`, `icon_hl`, and `expanded`. Group contexts contain `name`, `label`, `file_count`, `stats`, `files`, and `expanded`. `stats` is `nil` when line statistics are disabled.
 
 Folder and group `files` contain `{ path, old_path, group, status, stats }` entries for every represented file. The built-in callbacks are exported by `codediff.ui.explorer.formatters` and return fresh layouts that can be assigned directly or wrapped.
 

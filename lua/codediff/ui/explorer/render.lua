@@ -47,6 +47,9 @@ function M.create(data, tabpage, width)
     split:hide()
   end
 
+  -- Rows the user has marked reviewed, keyed by `group:path` (see ui/reviewed).
+  local reviewed_files = {}
+
   local explorer = {
     data = data,
     tabpage = tabpage,
@@ -54,6 +57,7 @@ function M.create(data, tabpage, width)
     bufnr = split.bufnr,
     winid = split.winid,
     is_hidden = options.hidden,
+    reviewed_files = reviewed_files, -- Session-local `group:path` set marked reviewed
     visible_groups = vim.deepcopy(options.visible_groups or { staged = true, unstaged = true, conflicts = true }),
   }
   local tree_data = tree_module.create_tree_data(data.status_result, data.git_root, data.base_revision, not data.git_root, explorer.visible_groups)
@@ -63,7 +67,7 @@ function M.create(data, tabpage, width)
     prepare_node = function(node)
       local current_width = split.winid and vim.api.nvim_win_is_valid(split.winid) and vim.api.nvim_win_get_width(split.winid) or text_width
       local selected = explorer.data.current_selection or {}
-      return nodes_module.prepare_node(node, current_width, selected.path, selected.group)
+      return nodes_module.prepare_node(node, current_width, selected.path, selected.group, reviewed_files)
     end,
   })
   explorer.tree = tree

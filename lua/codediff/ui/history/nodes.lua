@@ -5,6 +5,7 @@ local M = {}
 local Tree = require("codediff.ui.lib.tree")
 local Line = require("codediff.ui.lib.line")
 local config = require("codediff.config")
+local reviewed = require("codediff.ui.reviewed")
 
 -- Status symbols and colors (reuse from explorer)
 local STATUS_SYMBOLS = {
@@ -245,7 +246,8 @@ end
 
 -- Prepare node for rendering (format display)
 -- Match diffview format: [fold] [file count] | [adds] [dels] | hash subject author, date
-function M.prepare_node(node, max_width, selected_commit, selected_file, is_single_file_mode)
+--- @param reviewed_files table<string, boolean>|nil Rows marked reviewed this session
+function M.prepare_node(node, max_width, selected_commit, selected_file, is_single_file_mode, reviewed_files)
   local line = Line()
   local data = node.data or {}
 
@@ -259,6 +261,9 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
     -- In multi-file mode, highlight commit only when no file is selected
     local is_selected = data.hash == selected_commit and (is_single_file_mode or not selected_file)
     local is_expanded = node:is_expanded()
+    -- Only single-file history reviews commits directly; otherwise the reviewable
+    -- rows are the commit's file children.
+    local is_reviewed = is_single_file_mode and reviewed.is_marked(reviewed_files, data.hash, data.file_path)
 
     -- Get selected background color once
     local selected_bg = nil
@@ -280,8 +285,11 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
     end
 
     -- Expand/collapse indicator
-    local expand_icon = is_expanded and " " or " "
-    line:append(expand_icon, get_hl("NonText"))
+    if is_reviewed then
+      line:append(reviewed.GLYPH, get_hl(reviewed.HL))
+    else
+      line:append(is_expanded and " " or " ", get_hl("NonText"))
+    end
 
     -- File count (padded to align) - skip in single file mode (when file_path is set)
     if not data.file_path then
@@ -344,6 +352,7 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
     -- File node format (diffview style):
     -- [tree char] [status] [icon] [path/]filename
     local is_selected = data.commit_hash == selected_commit and data.path == selected_file
+    local is_reviewed = reviewed.is_marked(reviewed_files, data.commit_hash, data.path)
 
     local selected_bg = nil
     if is_selected then
@@ -377,6 +386,9 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
     end
     line:append(indent_str, get_hl("Comment"))
 
+    local marker_text, marker_hl = reviewed.segment(is_reviewed)
+    line:append(marker_text, get_hl(marker_hl))
+
     -- Status symbol
     line:append(data.status_symbol .. " ", get_hl(data.status_color))
 
@@ -390,16 +402,16 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
     if #indent_state > 1 then
       -- Tree mode: just filename
       filename = data.path:match("([^/]+)$") or data.path
-      line:append(filename, get_hl("Normal"))
+      line:append(filename, get_hl(is_reviewed and reviewed.HL or "Normal"))
     else
       -- List mode: show full path with directory dimmed
       local full_path = data.path
       filename = full_path:match("([^/]+)$") or full_path
       local directory = full_path:sub(1, -(#filename + 2))
       if #directory > 0 then
-        line:append(directory .. "/", get_hl("Comment"))
+        line:append(directory .. "/", get_hl(is_reviewed and reviewed.HL or "Comment"))
       end
-      line:append(filename, get_hl("Normal"))
+      line:append(filename, get_hl(is_reviewed and reviewed.HL or "Normal"))
     end
 
     -- Pad with spaces to fill full line width when selected

@@ -97,6 +97,22 @@ Inside the default `:CodeDiff` explorer, `gS`
 view of the current file (#352).
 
 
+Reviewed file markers                              *codediff-reviewed*
+
+In the explorer and history panels, `v` (`keymaps.explorer.toggle_reviewed`
+/ `keymaps.history.toggle_reviewed`) marks the file under the cursor as
+reviewed. The diff panes keep `v` for Visual mode.
+
+A marked row is prefixed with `✓` and tinted with |CodeDiffExplorerReviewed|,
+and `]f`/`[f` walk straight past it, so repeated `]f` visits only what is left
+to review. Navigation reports when nothing unreviewed remains rather than
+moving.
+
+Marks are per-tab and last only for the diff session; nothing is persisted.
+In single-file history mode commits are marked instead of files, since each
+commit is one thing to review.
+
+
 Git diff mode (current buffer vs revision):
 >vim
   :CodeDiff file HEAD
@@ -346,6 +362,7 @@ Setup entry point:
         hover = "K",
         refresh = "R",
         toggle_view_mode = "i",
+        toggle_reviewed = "v",
         stage_all = "S",
         unstage_all = "U",
         restore = "X",
@@ -363,6 +380,7 @@ Setup entry point:
       history = {
         select = "<CR>",
         toggle_view_mode = "i",
+        toggle_reviewed = "v",
         fold_open = "zo",
         fold_open_recursive = "zO",
         fold_close = "zc",
@@ -435,8 +453,8 @@ such as `{ fg = "#3fb950", bold = true }`. Omitted highlights use `Normal`;
 selected file rows retain their selection background.
 
 File contexts contain `path`, `filename`, `directory`, `old_path`, `group`,
-`stats`, `status`, `status_hl`, `status_right_margin`, `indent`, `indent_hl`,
-`icon`, and `icon_hl`.
+`reviewed`, `stats`, `status`, `status_hl`, `status_right_margin`, `indent`,
+`indent_hl`, `icon`, and `icon_hl`.
 
 Folder contexts contain `name`, `path`, `group`, `file_count`, `stats`, `files`,
 `indent`, `indent_hl`, `icon`, `icon_hl`, and `expanded`. Group contexts contain
@@ -577,6 +595,7 @@ Explorer & history git status highlights (customizable):
 - CodeDiffStatusUntracked   Untracked files (links to DiagnosticInfo)
 - CodeDiffStatusConflict    Conflicting files (links to DiagnosticError)
 - CodeDiffExplorerSelected  Selected file background (links to Visual)
+- CodeDiffExplorerReviewed  Rows marked reviewed (links to DiagnosticOk)
 - CodeDiffExplorerStatFiles File counts (links to Number)
 - CodeDiffExplorerStatInsertions Insertions (links to Added or DiagnosticOk)
 - CodeDiffExplorerStatDeletions Deletions (links to Removed or DiagnosticError)

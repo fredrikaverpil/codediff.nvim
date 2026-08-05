@@ -146,6 +146,13 @@ function M.setup(explorer)
     end, "Toggle list/tree view")
   end
 
+  -- Mark/unmark file under cursor as reviewed (v key)
+  if explorer_keymaps.toggle_reviewed then
+    panel_map(explorer_keymaps.toggle_reviewed, function()
+      actions_module.toggle_reviewed(explorer)
+    end, "Mark/unmark file as reviewed")
+  end
+
   -- Stage all files (S key)
   if explorer_keymaps.stage_all then
     panel_map(explorer_keymaps.stage_all, function()

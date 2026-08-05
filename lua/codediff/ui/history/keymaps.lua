@@ -130,6 +130,13 @@ function M.setup(history, opts)
     end, "Refresh history")
   end
 
+  -- Mark/unmark file (or single-file commit) under cursor as reviewed (v key)
+  if history_keymaps.toggle_reviewed then
+    panel_map(history_keymaps.toggle_reviewed, function()
+      require("codediff.ui.history.render").toggle_reviewed(history)
+    end, "Mark/unmark file as reviewed")
+  end
+
   -- Fold keymaps (Vim-style: zo/zO/zc/zC/za/zA/zR/zM — directory nodes only)
   tree_utils.setup_fold_keymaps({
     tree = tree,

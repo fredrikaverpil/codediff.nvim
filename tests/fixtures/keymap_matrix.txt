@@ -134,6 +134,7 @@ panel    n  gu             Toggle Changes visibility
 panel    n  i              Toggle list/tree view
 panel    n  q              Close codediff tab
 panel    n  t              Toggle diff layout
+panel    n  v              Mark/unmark file as reviewed
 panel    n  zA             Toggle fold recursively
 panel    n  zC             Close fold recursively
 panel    n  zM             Close all folds
@@ -211,6 +212,7 @@ panel    n  gu             Toggle Changes visibility
 panel    n  i              Toggle list/tree view
 panel    n  q              Close codediff tab
 panel    n  t              Toggle diff layout
+panel    n  v              Mark/unmark file as reviewed
 panel    n  zA             Toggle fold recursively
 panel    n  zC             Close fold recursively
 panel    n  zM             Close all folds

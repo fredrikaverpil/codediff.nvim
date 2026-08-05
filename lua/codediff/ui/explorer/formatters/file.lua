@@ -1,22 +1,29 @@
--- Default file row: `[indent] [icon] filename [directory] [stats] [status]`.
+-- Default file row: `[indent] [icon] [reviewed] filename [directory] [stats] [status]`.
 -- The `[stats]` segment renders only when `explorer.line_stats.enabled = true`.
+-- The `[reviewed]` slot is always two cells wide, so marking a row reviewed
+-- tints it without shifting anything to its right.
 
 local common = require("codediff.ui.explorer.formatters.common")
 local stats = require("codediff.ui.explorer.formatters.stats")
+local reviewed = require("codediff.ui.reviewed")
 
 return function(ctx)
+  local marker_text, marker_hl = reviewed.segment(ctx.reviewed)
+  local name_hl = ctx.reviewed and reviewed.HL or "Normal"
+  local directory_hl = ctx.reviewed and reviewed.HL or "ExplorerDirectorySmall"
   local left = {
     { segments = common.prefix(ctx) },
+    { segments = { { text = marker_text, hl = marker_hl } } },
     {
-      segments = { { text = ctx.filename, hl = "Normal" } },
+      segments = { { text = ctx.filename, hl = name_hl } },
       truncate_priority = 2,
     },
   }
   if ctx.directory ~= "" then
     left[#left + 1] = {
       segments = {
-        { text = " ", hl = "Normal" },
-        { text = ctx.directory, hl = "ExplorerDirectorySmall" },
+        { text = " ", hl = name_hl },
+        { text = ctx.directory, hl = directory_hl },
       },
       truncate_priority = 1,
     }

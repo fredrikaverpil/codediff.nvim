@@ -133,6 +133,7 @@ M.defaults = {
       hover = "K",
       refresh = "R",
       toggle_view_mode = "i", -- Toggle between 'list' and 'tree' views
+      toggle_reviewed = "v", -- Mark/unmark file under cursor as reviewed
       stage_all = "S", -- Stage all files
       unstage_all = "U", -- Unstage all files
       restore = "X", -- Discard changes to file (restore to index/HEAD)
@@ -152,6 +153,7 @@ M.defaults = {
       select = "<CR>", -- Select commit/file or toggle expand
       toggle_view_mode = "i", -- Toggle between 'list' and 'tree' views
       refresh = "R", -- Refresh history (re-fetch commits)
+      toggle_reviewed = "v", -- Mark/unmark file (or single-file commit) under cursor as reviewed
       -- Fold keymaps (Vim-style, apply to directory nodes only)
       fold_open = "zo",
       fold_open_recursive = "zO",

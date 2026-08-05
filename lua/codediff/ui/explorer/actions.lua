@@ -5,6 +5,7 @@ local config = require("codediff.config")
 local git = require("codediff.core.git")
 local tree_module = require("codediff.ui.explorer.tree")
 local layout = require("codediff.ui.layout")
+local reviewed = require("codediff.ui.reviewed")
 
 -- Find line number for a file node by scanning the tree
 -- Returns the line number or nil if not found
@@ -19,103 +20,16 @@ local function find_node_line(explorer, path, group)
   return nil
 end
 
--- Navigate to next file in explorer
-function M.navigate_next(explorer)
-  local all_files = tree_module.get_all_files(explorer.tree)
-  if #all_files == 0 then
-    vim.notify("No files in explorer", vim.log.levels.WARN)
-    return
-  end
-
-  local current_path = explorer.data.current_file_path
-  local current_group = explorer.data.current_file_group
-
-  -- If no current path, select first file
-  if not current_path then
-    local first_file = all_files[1]
-    explorer.on_file_select(first_file.data)
-    return
-  end
-
-  -- Find current index (match both path AND group for files in both staged/unstaged)
-  local current_index = 0
-  for i, file in ipairs(all_files) do
-    if file.data.path == current_path and file.data.group == current_group then
-      current_index = i
-      break
-    end
-  end
-
-  -- Get next file (wrap around if enabled)
-  if current_index >= #all_files and not config.options.diff.cycle_next_file then
-    vim.api.nvim_echo({ { string.format("Last file (%d of %d)", #all_files, #all_files), "WarningMsg" } }, false, {})
-    return
-  else
-    vim.api.nvim_echo({}, false, {})
-  end
-  local next_index = current_index % #all_files + 1
-  local next_file = all_files[next_index]
-
-  -- Update tree selection visually (switch to explorer window temporarily)
-  local current_win = vim.api.nvim_get_current_win()
-  if vim.api.nvim_win_is_valid(explorer.winid) then
-    local line = find_node_line(explorer, next_file.data.path, next_file.data.group)
-    if line then
-      vim.api.nvim_set_current_win(explorer.winid)
-      vim.api.nvim_win_set_cursor(explorer.winid, { line, 0 })
-      vim.api.nvim_set_current_win(current_win)
-    end
-  end
-
-  -- Trigger file select
-  explorer.on_file_select(next_file.data)
+local function is_reviewed(explorer, file)
+  local data = file.data or {}
+  return reviewed.is_marked(explorer.reviewed_files, data.group, data.path)
 end
 
--- Navigate to previous file in explorer
-function M.navigate_prev(explorer)
-  local all_files = tree_module.get_all_files(explorer.tree)
-  if #all_files == 0 then
-    vim.notify("No files in explorer", vim.log.levels.WARN)
-    return
-  end
-
-  local current_path = explorer.data.current_file_path
-  local current_group = explorer.data.current_file_group
-
-  -- If no current path, select last file
-  if not current_path then
-    local last_file = all_files[#all_files]
-    explorer.on_file_select(last_file.data)
-    return
-  end
-
-  -- Find current index (match both path AND group for files in both staged/unstaged)
-  local current_index = 0
-  for i, file in ipairs(all_files) do
-    if file.data.path == current_path and file.data.group == current_group then
-      current_index = i
-      break
-    end
-  end
-
-  -- Get previous file (wrap around if enabled)
-  if current_index <= 1 and not config.options.diff.cycle_next_file then
-    vim.api.nvim_echo({ { string.format("First file (1 of %d)", #all_files), "WarningMsg" } }, false, {})
-    return
-  else
-    vim.api.nvim_echo({}, false, {})
-  end
-  local prev_index = current_index - 2
-  if prev_index < 0 then
-    prev_index = #all_files + prev_index
-  end
-  prev_index = prev_index % #all_files + 1
-  local prev_file = all_files[prev_index]
-
-  -- Update tree selection visually (switch to explorer window temporarily)
+-- Move the tree cursor onto a file and open it.
+local function select_file(explorer, file)
   local current_win = vim.api.nvim_get_current_win()
-  if vim.api.nvim_win_is_valid(explorer.winid) then
-    local line = find_node_line(explorer, prev_file.data.path, prev_file.data.group)
+  if explorer.winid and vim.api.nvim_win_is_valid(explorer.winid) then
+    local line = find_node_line(explorer, file.data.path, file.data.group)
     if line then
       vim.api.nvim_set_current_win(explorer.winid)
       vim.api.nvim_win_set_cursor(explorer.winid, { line, 0 })
@@ -123,8 +37,106 @@ function M.navigate_prev(explorer)
     end
   end
 
-  -- Trigger file select
-  explorer.on_file_select(prev_file.data)
+  explorer.on_file_select(file.data)
+end
+
+-- Index of the selected file, or 0 when nothing is selected yet.
+-- Matches both path AND group, for files present in staged and unstaged alike.
+local function current_index_of(explorer, files)
+  for i, file in ipairs(files) do
+    if file.data.path == explorer.data.current_file_path and file.data.group == explorer.data.current_file_group then
+      return i
+    end
+  end
+  return 0
+end
+
+-- Report why a walk found nothing, in the caller's terms.
+local function report_exhausted(explorer, files, step)
+  if next(explorer.reviewed_files or {}) == nil then
+    -- Nothing is marked, so this is an ordinary list edge.
+    local message = step > 0 and string.format("Last file (%d of %d)", #files, #files) or string.format("First file (1 of %d)", #files)
+    vim.api.nvim_echo({ { message, "WarningMsg" } }, false, {})
+    return
+  end
+
+  for _, file in ipairs(files) do
+    if not is_reviewed(explorer, file) then
+      -- Unreviewed files exist, just not in the direction we walked.
+      if config.options.diff.cycle_next_file then
+        vim.notify("No other unreviewed files", vim.log.levels.INFO)
+      else
+        local edge = step > 0 and "Last" or "First"
+        vim.api.nvim_echo({ { edge .. " unreviewed file", "WarningMsg" } }, false, {})
+      end
+      return
+    end
+  end
+
+  vim.notify("All files have been reviewed", vim.log.levels.INFO)
+end
+
+-- Walk to the nearest file not marked reviewed. `step` is 1 forwards, -1 back.
+local function navigate(explorer, step)
+  local all_files = tree_module.get_all_files(explorer.tree)
+  if #all_files == 0 then
+    vim.notify("No files in explorer", vim.log.levels.WARN)
+    return
+  end
+
+  local current_index = current_index_of(explorer, all_files)
+  local order = reviewed.walk_order(#all_files, current_index, step, config.options.diff.cycle_next_file)
+  for _, index in ipairs(order) do
+    local file = all_files[index]
+    if file and not is_reviewed(explorer, file) then
+      vim.api.nvim_echo({}, false, {})
+      select_file(explorer, file)
+      return
+    end
+  end
+
+  report_exhausted(explorer, all_files, step)
+end
+
+-- Navigate to next file in explorer, skipping files marked reviewed
+function M.navigate_next(explorer)
+  navigate(explorer, 1)
+end
+
+-- Navigate to previous file in explorer, skipping files marked reviewed
+function M.navigate_prev(explorer)
+  navigate(explorer, -1)
+end
+
+-- Toggle the reviewed mark on the file under the explorer cursor, or on the
+-- file currently shown in the diff panes when the cursor is elsewhere.
+function M.toggle_reviewed(explorer)
+  if not explorer or not explorer.tree then
+    return
+  end
+
+  local path, group
+  if explorer.bufnr and vim.api.nvim_get_current_buf() == explorer.bufnr then
+    local node = explorer.tree:get_node()
+    local data = node and node.data
+    if not data or data.type == "group" or data.type == "directory" then
+      vim.notify("Mark reviewed is only available for files", vim.log.levels.WARN)
+      return
+    end
+    path, group = data.path, data.group
+  else
+    path, group = explorer.data.current_file_path, explorer.data.current_file_group
+  end
+
+  -- The renderer holds this exact table, so it must be mutated, never replaced.
+  if not explorer.reviewed_files then
+    return
+  end
+  if reviewed.toggle(explorer.reviewed_files, group, path) == nil then
+    vim.notify("No file selected", vim.log.levels.WARN)
+    return
+  end
+  explorer.tree:render()
 end
 
 -- Toggle explorer visibility (hide/show)
