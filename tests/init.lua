@@ -64,8 +64,23 @@ vim.opt.swapfile = false
 -- Neovim's runtime plugins despite `--noplugin`.
 vim.g.loaded_autoread = 1
 
--- Load plugin files (for integration tests that need commands)
+-- Load plugin files (for integration tests that need commands).
+--
+-- The user's own config directories are dropped from 'runtimepath' first: this
+-- `runtime!` is what defeats `--noplugin`, so without the filter it also sources
+-- whatever lives in the developer's personal `plugin/` directory, and any error
+-- raised there aborts tests/init.lua before a single spec runs.
+local user_dirs = {
+  vim.fn.stdpath("config"),
+  vim.fn.stdpath("data") .. "/site",
+}
+local saved_rtp = vim.o.runtimepath
+for _, dir in ipairs(user_dirs) do
+  vim.opt.rtp:remove(dir)
+  vim.opt.rtp:remove(dir .. "/after")
+end
 vim.cmd("runtime! plugin/*.lua plugin/*.vim")
+vim.o.runtimepath = saved_rtp
 
 -- Setup plugin
 require("codediff").setup()
