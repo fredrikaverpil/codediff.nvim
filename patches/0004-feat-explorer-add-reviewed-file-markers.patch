@@ -1,0 +1,1610 @@
+From a710a97617b7892ee33dc85153dabeb293a93e65 Mon Sep 17 00:00:00 2001
+From: Fredrik Averpil <fredrik.averpil@proton.me>
+Date: Wed, 5 Aug 2026 16:44:29 +0200
+Subject: [PATCH 4/4] feat(explorer): add reviewed file markers
+
+Reviewing a large diff means keeping track of which files have already been
+looked at, which is otherwise done from memory. `v` in the explorer or history
+panel marks the file under the cursor, marked rows are tinted and prefixed
+with a check, and `]f`/`[f` skip them, so repeatedly pressing `]f` walks only
+what is left.
+
+The key is bound on the panel buffers only, so the diff panes keep `v` for
+Visual mode (and the `vih` hunk text object).
+
+Marks are per-tab and deliberately not persisted: the same file is worth
+reviewing again in the next diff. Single-file history marks commits rather
+than files, since there each commit is the unit being reviewed.
+
+The mark bookkeeping is shared by both panels via codediff.ui.reviewed,
+including the list walk that decides which row to visit next, so explorer and
+history cannot drift apart on what "next unreviewed" means. Navigation keeps
+upstream's positional messages while nothing is marked, and only switches to
+review-aware wording once the feature is actually in use.
+---
+ README.md                                     |  13 +-
+ doc/codediff.txt                              |  23 +-
+ lua/codediff/config.lua                       |   2 +
+ lua/codediff/ui/explorer/actions.lua          | 164 +++++-----
+ lua/codediff/ui/explorer/formatters/file.lua  |  15 +-
+ lua/codediff/ui/explorer/init.lua             |   1 +
+ lua/codediff/ui/explorer/keymaps.lua          |   7 +
+ lua/codediff/ui/explorer/nodes.lua            |   9 +-
+ lua/codediff/ui/explorer/render.lua           |   6 +-
+ lua/codediff/ui/highlights.lua                |   6 +
+ lua/codediff/ui/history/init.lua              |   3 +
+ lua/codediff/ui/history/keymaps.lua           |   7 +
+ lua/codediff/ui/history/nodes.lua             |  24 +-
+ lua/codediff/ui/history/render.lua            | 308 +++++++++++-------
+ lua/codediff/ui/keymap_help.lua               |   2 +
+ lua/codediff/ui/reviewed.lua                  | 107 ++++++
+ tests/fixtures/keymap_matrix.txt              |   2 +
+ .../integration/ui/explorer/reviewed_spec.lua | 115 +++++++
+ .../integration/ui/history/reviewed_spec.lua  | 130 ++++++++
+ tests/unit/ui/reviewed_spec.lua               | 122 +++++++
+ 20 files changed, 857 insertions(+), 209 deletions(-)
+ create mode 100644 lua/codediff/ui/reviewed.lua
+ create mode 100644 tests/integration/ui/explorer/reviewed_spec.lua
+ create mode 100644 tests/integration/ui/history/reviewed_spec.lua
+ create mode 100644 tests/unit/ui/reviewed_spec.lua
+
+diff --git a/README.md b/README.md
+index 391bada..69a82b7 100644
+--- a/README.md
++++ b/README.md
+@@ -119,6 +119,15 @@ git am -3 patches/*.patch
+ - **Focused navigation:** Move between files and hunks, fold unchanged code, and track moved blocks.
+ - **Conflict resolution:** Resolve merge conflicts per block or across the whole file.
+ - **Editor-native context:** Keep Tree-sitter syntax highlighting in revision buffers.
++- **Reviewed file markers:** Mark files you have already looked at with `v`; marked rows get a `✓` and `]f`/`[f` skip past them.
++
++### Reviewed file markers
++
++In the explorer and history panels, `v` (`keymaps.explorer.toggle_reviewed` / `keymaps.history.toggle_reviewed`) marks the file under the cursor as reviewed. The diff panes keep `v` for Visual mode.
++
++A marked row is tinted with `CodeDiffExplorerReviewed` (linked to `DiagnosticOk` by default) and prefixed with `✓`, and `]f`/`[f` walk straight past it — so repeatedly pressing `]f` visits only what is left to review. When every file is marked, navigation says so instead of moving.
++
++Marks are per-tab and last only as long as the diff session: nothing is written to disk, and reopening the diff starts a fresh pass. In file-history mode with a single file, commits are what gets marked, since each commit is one thing to review.
+ 
+ ## Installation
+ 
+@@ -357,6 +366,7 @@ Both methods automatically place the library in the plugin root directory.
+         hover = "K",        -- Show full path
+         refresh = "R",      -- Refresh git status
+         toggle_view_mode = "i",  -- Toggle between 'list' and 'tree' views
++        toggle_reviewed = "v",   -- Mark/unmark file under cursor as reviewed
+         stage_all = "S",    -- Stage all files
+         unstage_all = "U",  -- Unstage all files
+         restore = "X",      -- Discard changes (restore file)
+@@ -376,6 +386,7 @@ Both methods automatically place the library in the plugin root directory.
+         select = "<CR>",    -- Select commit/file or toggle expand
+         toggle_view_mode = "i",  -- Toggle between 'list' and 'tree' views
+         refresh = "R",      -- Refresh history (re-fetch commits)
++        toggle_reviewed = "v",   -- Mark/unmark file (or single-file commit) under cursor as reviewed
+         -- Fold keymaps (Vim-style, apply to directory nodes only)
+         fold_open = "zo",           -- Open fold (expand current node)
+         fold_open_recursive = "zO", -- Open fold recursively (expand all descendants)
+@@ -449,7 +460,7 @@ A layout contains `left` and `right` lists of regions and an optional `min_gap`
+ 
+ Each segment is `{ text = string, hl? = highlight }`. `hl` accepts a Neovim highlight group, a `#RGB`/`#RRGGBB` foreground color, or a highlight definition such as `{ fg = "#3fb950", bold = true }`. Omitted highlights use `Normal`; selected file rows retain their selection background.
+ 
+-File contexts contain `path`, `filename`, `directory`, `old_path`, `group`, `stats`, `status`, `status_hl`, `status_right_margin`, `indent`, `indent_hl`, `icon`, and `icon_hl`. Folder contexts contain `name`, `path`, `group`, `file_count`, `stats`, `files`, `indent`, `indent_hl`, `icon`, `icon_hl`, and `expanded`. Group contexts contain `name`, `label`, `file_count`, `stats`, `files`, and `expanded`. `stats` is `nil` when line statistics are disabled.
++File contexts contain `path`, `filename`, `directory`, `old_path`, `group`, `reviewed`, `stats`, `status`, `status_hl`, `status_right_margin`, `indent`, `indent_hl`, `icon`, and `icon_hl`. Folder contexts contain `name`, `path`, `group`, `file_count`, `stats`, `files`, `indent`, `indent_hl`, `icon`, `icon_hl`, and `expanded`. Group contexts contain `name`, `label`, `file_count`, `stats`, `files`, and `expanded`. `stats` is `nil` when line statistics are disabled.
+ 
+ Folder and group `files` contain `{ path, old_path, group, status, stats }` entries for every represented file. The built-in callbacks are exported by `codediff.ui.explorer.formatters` and return fresh layouts that can be assigned directly or wrapped.
+ 
+diff --git a/doc/codediff.txt b/doc/codediff.txt
+index c877d3d..bff8794 100644
+--- a/doc/codediff.txt
++++ b/doc/codediff.txt
+@@ -97,6 +97,22 @@ Inside the default `:CodeDiff` explorer, `gS`
+ view of the current file (#352).
+ 
+ 
++Reviewed file markers                              *codediff-reviewed*
++
++In the explorer and history panels, `v` (`keymaps.explorer.toggle_reviewed`
++/ `keymaps.history.toggle_reviewed`) marks the file under the cursor as
++reviewed. The diff panes keep `v` for Visual mode.
++
++A marked row is prefixed with `✓` and tinted with |CodeDiffExplorerReviewed|,
++and `]f`/`[f` walk straight past it, so repeated `]f` visits only what is left
++to review. Navigation reports when nothing unreviewed remains rather than
++moving.
++
++Marks are per-tab and last only for the diff session; nothing is persisted.
++In single-file history mode commits are marked instead of files, since each
++commit is one thing to review.
++
++
+ Git diff mode (current buffer vs revision):
+ >vim
+   :CodeDiff file HEAD
+@@ -346,6 +362,7 @@ Setup entry point:
+         hover = "K",
+         refresh = "R",
+         toggle_view_mode = "i",
++        toggle_reviewed = "v",
+         stage_all = "S",
+         unstage_all = "U",
+         restore = "X",
+@@ -363,6 +380,7 @@ Setup entry point:
+       history = {
+         select = "<CR>",
+         toggle_view_mode = "i",
++        toggle_reviewed = "v",
+         fold_open = "zo",
+         fold_open_recursive = "zO",
+         fold_close = "zc",
+@@ -435,8 +453,8 @@ such as `{ fg = "#3fb950", bold = true }`. Omitted highlights use `Normal`;
+ selected file rows retain their selection background.
+ 
+ File contexts contain `path`, `filename`, `directory`, `old_path`, `group`,
+-`stats`, `status`, `status_hl`, `status_right_margin`, `indent`, `indent_hl`,
+-`icon`, and `icon_hl`.
++`reviewed`, `stats`, `status`, `status_hl`, `status_right_margin`, `indent`,
++`indent_hl`, `icon`, and `icon_hl`.
+ 
+ Folder contexts contain `name`, `path`, `group`, `file_count`, `stats`, `files`,
+ `indent`, `indent_hl`, `icon`, `icon_hl`, and `expanded`. Group contexts contain
+@@ -577,6 +595,7 @@ Explorer & history git status highlights (customizable):
+ - CodeDiffStatusUntracked   Untracked files (links to DiagnosticInfo)
+ - CodeDiffStatusConflict    Conflicting files (links to DiagnosticError)
+ - CodeDiffExplorerSelected  Selected file background (links to Visual)
++- CodeDiffExplorerReviewed  Rows marked reviewed (links to DiagnosticOk)
+ - CodeDiffExplorerStatFiles File counts (links to Number)
+ - CodeDiffExplorerStatInsertions Insertions (links to Added or DiagnosticOk)
+ - CodeDiffExplorerStatDeletions Deletions (links to Removed or DiagnosticError)
+diff --git a/lua/codediff/config.lua b/lua/codediff/config.lua
+index 59a4139..1606f84 100644
+--- a/lua/codediff/config.lua
++++ b/lua/codediff/config.lua
+@@ -133,6 +133,7 @@ M.defaults = {
+       hover = "K",
+       refresh = "R",
+       toggle_view_mode = "i", -- Toggle between 'list' and 'tree' views
++      toggle_reviewed = "v", -- Mark/unmark file under cursor as reviewed
+       stage_all = "S", -- Stage all files
+       unstage_all = "U", -- Unstage all files
+       restore = "X", -- Discard changes to file (restore to index/HEAD)
+@@ -152,6 +153,7 @@ M.defaults = {
+       select = "<CR>", -- Select commit/file or toggle expand
+       toggle_view_mode = "i", -- Toggle between 'list' and 'tree' views
+       refresh = "R", -- Refresh history (re-fetch commits)
++      toggle_reviewed = "v", -- Mark/unmark file (or single-file commit) under cursor as reviewed
+       -- Fold keymaps (Vim-style, apply to directory nodes only)
+       fold_open = "zo",
+       fold_open_recursive = "zO",
+diff --git a/lua/codediff/ui/explorer/actions.lua b/lua/codediff/ui/explorer/actions.lua
+index f06175d..dde4763 100644
+--- a/lua/codediff/ui/explorer/actions.lua
++++ b/lua/codediff/ui/explorer/actions.lua
+@@ -5,6 +5,7 @@ local config = require("codediff.config")
+ local git = require("codediff.core.git")
+ local tree_module = require("codediff.ui.explorer.tree")
+ local layout = require("codediff.ui.layout")
++local reviewed = require("codediff.ui.reviewed")
+ 
+ -- Find line number for a file node by scanning the tree
+ -- Returns the line number or nil if not found
+@@ -19,112 +20,123 @@ local function find_node_line(explorer, path, group)
+   return nil
+ end
+ 
+--- Navigate to next file in explorer
+-function M.navigate_next(explorer)
+-  local all_files = tree_module.get_all_files(explorer.tree)
+-  if #all_files == 0 then
+-    vim.notify("No files in explorer", vim.log.levels.WARN)
+-    return
+-  end
+-
+-  local current_path = explorer.data.current_file_path
+-  local current_group = explorer.data.current_file_group
++local function is_reviewed(explorer, file)
++  local data = file.data or {}
++  return reviewed.is_marked(explorer.reviewed_files, data.group, data.path)
++end
+ 
+-  -- If no current path, select first file
+-  if not current_path then
+-    local first_file = all_files[1]
+-    explorer.on_file_select(first_file.data)
+-    return
++-- Move the tree cursor onto a file and open it.
++local function select_file(explorer, file)
++  local current_win = vim.api.nvim_get_current_win()
++  if explorer.winid and vim.api.nvim_win_is_valid(explorer.winid) then
++    local line = find_node_line(explorer, file.data.path, file.data.group)
++    if line then
++      vim.api.nvim_set_current_win(explorer.winid)
++      vim.api.nvim_win_set_cursor(explorer.winid, { line, 0 })
++      vim.api.nvim_set_current_win(current_win)
++    end
+   end
+ 
+-  -- Find current index (match both path AND group for files in both staged/unstaged)
+-  local current_index = 0
+-  for i, file in ipairs(all_files) do
+-    if file.data.path == current_path and file.data.group == current_group then
+-      current_index = i
+-      break
++  explorer.on_file_select(file.data)
++end
++
++-- Index of the selected file, or 0 when nothing is selected yet.
++-- Matches both path AND group, for files present in staged and unstaged alike.
++local function current_index_of(explorer, files)
++  for i, file in ipairs(files) do
++    if file.data.path == explorer.data.current_file_path and file.data.group == explorer.data.current_file_group then
++      return i
+     end
+   end
++  return 0
++end
+ 
+-  -- Get next file (wrap around if enabled)
+-  if current_index >= #all_files and not config.options.diff.cycle_next_file then
+-    vim.api.nvim_echo({ { string.format("Last file (%d of %d)", #all_files, #all_files), "WarningMsg" } }, false, {})
++-- Report why a walk found nothing, in the caller's terms.
++local function report_exhausted(explorer, files, step)
++  if next(explorer.reviewed_files or {}) == nil then
++    -- Nothing is marked, so this is an ordinary list edge.
++    local message = step > 0 and string.format("Last file (%d of %d)", #files, #files) or string.format("First file (1 of %d)", #files)
++    vim.api.nvim_echo({ { message, "WarningMsg" } }, false, {})
+     return
+-  else
+-    vim.api.nvim_echo({}, false, {})
+   end
+-  local next_index = current_index % #all_files + 1
+-  local next_file = all_files[next_index]
+ 
+-  -- Update tree selection visually (switch to explorer window temporarily)
+-  local current_win = vim.api.nvim_get_current_win()
+-  if vim.api.nvim_win_is_valid(explorer.winid) then
+-    local line = find_node_line(explorer, next_file.data.path, next_file.data.group)
+-    if line then
+-      vim.api.nvim_set_current_win(explorer.winid)
+-      vim.api.nvim_win_set_cursor(explorer.winid, { line, 0 })
+-      vim.api.nvim_set_current_win(current_win)
++  for _, file in ipairs(files) do
++    if not is_reviewed(explorer, file) then
++      -- Unreviewed files exist, just not in the direction we walked.
++      if config.options.diff.cycle_next_file then
++        vim.notify("No other unreviewed files", vim.log.levels.INFO)
++      else
++        local edge = step > 0 and "Last" or "First"
++        vim.api.nvim_echo({ { edge .. " unreviewed file", "WarningMsg" } }, false, {})
++      end
++      return
+     end
+   end
+ 
+-  -- Trigger file select
+-  explorer.on_file_select(next_file.data)
++  vim.notify("All files have been reviewed", vim.log.levels.INFO)
+ end
+ 
+--- Navigate to previous file in explorer
+-function M.navigate_prev(explorer)
++-- Walk to the nearest file not marked reviewed. `step` is 1 forwards, -1 back.
++local function navigate(explorer, step)
+   local all_files = tree_module.get_all_files(explorer.tree)
+   if #all_files == 0 then
+     vim.notify("No files in explorer", vim.log.levels.WARN)
+     return
+   end
+ 
+-  local current_path = explorer.data.current_file_path
+-  local current_group = explorer.data.current_file_group
++  local current_index = current_index_of(explorer, all_files)
++  local order = reviewed.walk_order(#all_files, current_index, step, config.options.diff.cycle_next_file)
++  for _, index in ipairs(order) do
++    local file = all_files[index]
++    if file and not is_reviewed(explorer, file) then
++      vim.api.nvim_echo({}, false, {})
++      select_file(explorer, file)
++      return
++    end
++  end
++
++  report_exhausted(explorer, all_files, step)
++end
++
++-- Navigate to next file in explorer, skipping files marked reviewed
++function M.navigate_next(explorer)
++  navigate(explorer, 1)
++end
++
++-- Navigate to previous file in explorer, skipping files marked reviewed
++function M.navigate_prev(explorer)
++  navigate(explorer, -1)
++end
+ 
+-  -- If no current path, select last file
+-  if not current_path then
+-    local last_file = all_files[#all_files]
+-    explorer.on_file_select(last_file.data)
++-- Toggle the reviewed mark on the file under the explorer cursor, or on the
++-- file currently shown in the diff panes when the cursor is elsewhere.
++function M.toggle_reviewed(explorer)
++  if not explorer or not explorer.tree then
+     return
+   end
+ 
+-  -- Find current index (match both path AND group for files in both staged/unstaged)
+-  local current_index = 0
+-  for i, file in ipairs(all_files) do
+-    if file.data.path == current_path and file.data.group == current_group then
+-      current_index = i
+-      break
++  local path, group
++  if explorer.bufnr and vim.api.nvim_get_current_buf() == explorer.bufnr then
++    local node = explorer.tree:get_node()
++    local data = node and node.data
++    if not data or data.type == "group" or data.type == "directory" then
++      vim.notify("Mark reviewed is only available for files", vim.log.levels.WARN)
++      return
+     end
++    path, group = data.path, data.group
++  else
++    path, group = explorer.data.current_file_path, explorer.data.current_file_group
+   end
+ 
+-  -- Get previous file (wrap around if enabled)
+-  if current_index <= 1 and not config.options.diff.cycle_next_file then
+-    vim.api.nvim_echo({ { string.format("First file (1 of %d)", #all_files), "WarningMsg" } }, false, {})
++  -- The renderer holds this exact table, so it must be mutated, never replaced.
++  if not explorer.reviewed_files then
+     return
+-  else
+-    vim.api.nvim_echo({}, false, {})
+-  end
+-  local prev_index = current_index - 2
+-  if prev_index < 0 then
+-    prev_index = #all_files + prev_index
+   end
+-  prev_index = prev_index % #all_files + 1
+-  local prev_file = all_files[prev_index]
+-
+-  -- Update tree selection visually (switch to explorer window temporarily)
+-  local current_win = vim.api.nvim_get_current_win()
+-  if vim.api.nvim_win_is_valid(explorer.winid) then
+-    local line = find_node_line(explorer, prev_file.data.path, prev_file.data.group)
+-    if line then
+-      vim.api.nvim_set_current_win(explorer.winid)
+-      vim.api.nvim_win_set_cursor(explorer.winid, { line, 0 })
+-      vim.api.nvim_set_current_win(current_win)
+-    end
++  if reviewed.toggle(explorer.reviewed_files, group, path) == nil then
++    vim.notify("No file selected", vim.log.levels.WARN)
++    return
+   end
+-
+-  -- Trigger file select
+-  explorer.on_file_select(prev_file.data)
++  explorer.tree:render()
+ end
+ 
+ -- Toggle explorer visibility (hide/show)
+diff --git a/lua/codediff/ui/explorer/formatters/file.lua b/lua/codediff/ui/explorer/formatters/file.lua
+index f7ef6b1..23a8fef 100644
+--- a/lua/codediff/ui/explorer/formatters/file.lua
++++ b/lua/codediff/ui/explorer/formatters/file.lua
+@@ -1,22 +1,29 @@
+--- Default file row: `[indent] [icon] filename [directory] [stats] [status]`.
++-- Default file row: `[indent] [icon] [reviewed] filename [directory] [stats] [status]`.
+ -- The `[stats]` segment renders only when `explorer.line_stats.enabled = true`.
++-- The `[reviewed]` slot is always two cells wide, so marking a row reviewed
++-- tints it without shifting anything to its right.
+ 
+ local common = require("codediff.ui.explorer.formatters.common")
+ local stats = require("codediff.ui.explorer.formatters.stats")
++local reviewed = require("codediff.ui.reviewed")
+ 
+ return function(ctx)
++  local marker_text, marker_hl = reviewed.segment(ctx.reviewed)
++  local name_hl = ctx.reviewed and reviewed.HL or "Normal"
++  local directory_hl = ctx.reviewed and reviewed.HL or "ExplorerDirectorySmall"
+   local left = {
+     { segments = common.prefix(ctx) },
++    { segments = { { text = marker_text, hl = marker_hl } } },
+     {
+-      segments = { { text = ctx.filename, hl = "Normal" } },
++      segments = { { text = ctx.filename, hl = name_hl } },
+       truncate_priority = 2,
+     },
+   }
+   if ctx.directory ~= "" then
+     left[#left + 1] = {
+       segments = {
+-        { text = " ", hl = "Normal" },
+-        { text = ctx.directory, hl = "ExplorerDirectorySmall" },
++        { text = " ", hl = name_hl },
++        { text = ctx.directory, hl = directory_hl },
+       },
+       truncate_priority = 1,
+     }
+diff --git a/lua/codediff/ui/explorer/init.lua b/lua/codediff/ui/explorer/init.lua
+index 1c37d33..a741eb9 100644
+--- a/lua/codediff/ui/explorer/init.lua
++++ b/lua/codediff/ui/explorer/init.lua
+@@ -15,6 +15,7 @@ M.navigate_next = actions.navigate_next
+ M.navigate_prev = actions.navigate_prev
+ M.toggle_visibility = actions.toggle_visibility
+ M.toggle_view_mode = actions.toggle_view_mode
++M.toggle_reviewed = actions.toggle_reviewed
+ M.toggle_stage_entry = actions.toggle_stage_entry
+ M.toggle_stage_file = actions.toggle_stage_file
+ M.toggle_staged_view = actions.toggle_staged_view
+diff --git a/lua/codediff/ui/explorer/keymaps.lua b/lua/codediff/ui/explorer/keymaps.lua
+index 6fb1a28..a3bb679 100644
+--- a/lua/codediff/ui/explorer/keymaps.lua
++++ b/lua/codediff/ui/explorer/keymaps.lua
+@@ -146,6 +146,13 @@ function M.setup(explorer)
+     end, "Toggle list/tree view")
+   end
+ 
++  -- Mark/unmark file under cursor as reviewed (v key)
++  if explorer_keymaps.toggle_reviewed then
++    panel_map(explorer_keymaps.toggle_reviewed, function()
++      actions_module.toggle_reviewed(explorer)
++    end, "Mark/unmark file as reviewed")
++  end
++
+   -- Stage all files (S key)
+   if explorer_keymaps.stage_all then
+     panel_map(explorer_keymaps.stage_all, function()
+diff --git a/lua/codediff/ui/explorer/nodes.lua b/lua/codediff/ui/explorer/nodes.lua
+index dae0e57..b686813 100644
+--- a/lua/codediff/ui/explorer/nodes.lua
++++ b/lua/codediff/ui/explorer/nodes.lua
+@@ -7,6 +7,7 @@ local config = require("codediff.config")
+ local line_layout = require("codediff.ui.explorer.line_layout")
+ local line_stats = require("codediff.ui.explorer.line_stats")
+ local default_formatters = require("codediff.ui.explorer.formatters")
++local reviewed = require("codediff.ui.reviewed")
+ 
+ -- Merge artifact patterns (created by git mergetool)
+ local MERGE_ARTIFACT_PATTERNS = {
+@@ -323,13 +324,14 @@ local function folder_context(node, data, explorer_config)
+   }
+ end
+ 
+-local function file_context(node, data, explorer_config)
++local function file_context(node, data, explorer_config, reviewed_files)
+   local indent, indent_hl = get_indent(node, data, explorer_config)
+   local full_path = data.path or node.text
+   local filename = full_path:match("([^/]+)$") or full_path
+   local directory = explorer_config.view_mode == "tree" and "" or full_path:sub(1, -(#filename + 1))
+   return {
+     path = full_path,
++    reviewed = reviewed.is_marked(reviewed_files, data.group, data.path),
+     filename = filename,
+     directory = directory,
+     old_path = data.old_path,
+@@ -353,7 +355,8 @@ local function selected_background(is_selected)
+ end
+ 
+ -- Prepare node for rendering (format display)
+-function M.prepare_node(node, max_width, selected_path, selected_group)
++--- @param reviewed_files table<string, boolean>|nil Rows marked reviewed this session
++function M.prepare_node(node, max_width, selected_path, selected_group, reviewed_files)
+   local data = node.data or {}
+   local explorer_config = config.options.explorer
+   -- Formatters are pluggable per node type; nil in config means "use the
+@@ -370,7 +373,7 @@ function M.prepare_node(node, max_width, selected_path, selected_group)
+ 
+   local is_selected = data.path == selected_path and data.group == selected_group
+   local fmt = user_formatters.file or default_formatters.file
+-  return line_layout.render(fmt(file_context(node, data, explorer_config)), max_width, selected_background(is_selected), explorer_config.ellipsis)
++  return line_layout.render(fmt(file_context(node, data, explorer_config, reviewed_files)), max_width, selected_background(is_selected), explorer_config.ellipsis)
+ end
+ 
+ return M
+diff --git a/lua/codediff/ui/explorer/render.lua b/lua/codediff/ui/explorer/render.lua
+index f38129d..bc3acb1 100644
+--- a/lua/codediff/ui/explorer/render.lua
++++ b/lua/codediff/ui/explorer/render.lua
+@@ -47,6 +47,9 @@ function M.create(data, tabpage, width)
+     split:hide()
+   end
+ 
++  -- Rows the user has marked reviewed, keyed by `group:path` (see ui/reviewed).
++  local reviewed_files = {}
++
+   local explorer = {
+     data = data,
+     tabpage = tabpage,
+@@ -54,6 +57,7 @@ function M.create(data, tabpage, width)
+     bufnr = split.bufnr,
+     winid = split.winid,
+     is_hidden = options.hidden,
++    reviewed_files = reviewed_files, -- Session-local `group:path` set marked reviewed
+     visible_groups = vim.deepcopy(options.visible_groups or { staged = true, unstaged = true, conflicts = true }),
+   }
+   local tree_data = tree_module.create_tree_data(data.status_result, data.git_root, data.base_revision, not data.git_root, explorer.visible_groups)
+@@ -63,7 +67,7 @@ function M.create(data, tabpage, width)
+     prepare_node = function(node)
+       local current_width = split.winid and vim.api.nvim_win_is_valid(split.winid) and vim.api.nvim_win_get_width(split.winid) or text_width
+       local selected = explorer.data.current_selection or {}
+-      return nodes_module.prepare_node(node, current_width, selected.path, selected.group)
++      return nodes_module.prepare_node(node, current_width, selected.path, selected.group, reviewed_files)
+     end,
+   })
+   explorer.tree = tree
+diff --git a/lua/codediff/ui/highlights.lua b/lua/codediff/ui/highlights.lua
+index 0ebe8eb..655f5e2 100644
+--- a/lua/codediff/ui/highlights.lua
++++ b/lua/codediff/ui/highlights.lua
+@@ -228,6 +228,12 @@ function M.setup()
+     default = true,
+   })
+ 
++  -- Explorer/history rows marked as reviewed
++  vim.api.nvim_set_hl(0, "CodeDiffExplorerReviewed", {
++    link = "DiagnosticOk",
++    default = true,
++  })
++
+   -- Explorer indent markers (tree view)
+   vim.api.nvim_set_hl(0, "NeoTreeIndentMarker", {
+     link = "Comment",
+diff --git a/lua/codediff/ui/history/init.lua b/lua/codediff/ui/history/init.lua
+index 75cbb34..9b66e7d 100644
+--- a/lua/codediff/ui/history/init.lua
++++ b/lua/codediff/ui/history/init.lua
+@@ -20,6 +20,9 @@ M.navigate_prev = render.navigate_prev
+ M.navigate_next_commit = render.navigate_next_commit
+ M.navigate_prev_commit = render.navigate_prev_commit
+ 
++-- Toggle reviewed state
++M.toggle_reviewed = render.toggle_reviewed
++
+ -- Toggle visibility
+ M.toggle_visibility = render.toggle_visibility
+ 
+diff --git a/lua/codediff/ui/history/keymaps.lua b/lua/codediff/ui/history/keymaps.lua
+index 547c9fb..7221d67 100644
+--- a/lua/codediff/ui/history/keymaps.lua
++++ b/lua/codediff/ui/history/keymaps.lua
+@@ -130,6 +130,13 @@ function M.setup(history, opts)
+     end, "Refresh history")
+   end
+ 
++  -- Mark/unmark file (or single-file commit) under cursor as reviewed (v key)
++  if history_keymaps.toggle_reviewed then
++    panel_map(history_keymaps.toggle_reviewed, function()
++      require("codediff.ui.history.render").toggle_reviewed(history)
++    end, "Mark/unmark file as reviewed")
++  end
++
+   -- Fold keymaps (Vim-style: zo/zO/zc/zC/za/zA/zR/zM — directory nodes only)
+   tree_utils.setup_fold_keymaps({
+     tree = tree,
+diff --git a/lua/codediff/ui/history/nodes.lua b/lua/codediff/ui/history/nodes.lua
+index 55da54b..ce88376 100644
+--- a/lua/codediff/ui/history/nodes.lua
++++ b/lua/codediff/ui/history/nodes.lua
+@@ -5,6 +5,7 @@ local M = {}
+ local Tree = require("codediff.ui.lib.tree")
+ local Line = require("codediff.ui.lib.line")
+ local config = require("codediff.config")
++local reviewed = require("codediff.ui.reviewed")
+ 
+ -- Status symbols and colors (reuse from explorer)
+ local STATUS_SYMBOLS = {
+@@ -245,7 +246,8 @@ end
+ 
+ -- Prepare node for rendering (format display)
+ -- Match diffview format: [fold] [file count] | [adds] [dels] | hash subject author, date
+-function M.prepare_node(node, max_width, selected_commit, selected_file, is_single_file_mode)
++--- @param reviewed_files table<string, boolean>|nil Rows marked reviewed this session
++function M.prepare_node(node, max_width, selected_commit, selected_file, is_single_file_mode, reviewed_files)
+   local line = Line()
+   local data = node.data or {}
+ 
+@@ -259,6 +261,9 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
+     -- In multi-file mode, highlight commit only when no file is selected
+     local is_selected = data.hash == selected_commit and (is_single_file_mode or not selected_file)
+     local is_expanded = node:is_expanded()
++    -- Only single-file history reviews commits directly; otherwise the reviewable
++    -- rows are the commit's file children.
++    local is_reviewed = is_single_file_mode and reviewed.is_marked(reviewed_files, data.hash, data.file_path)
+ 
+     -- Get selected background color once
+     local selected_bg = nil
+@@ -280,8 +285,11 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
+     end
+ 
+     -- Expand/collapse indicator
+-    local expand_icon = is_expanded and " " or " "
+-    line:append(expand_icon, get_hl("NonText"))
++    if is_reviewed then
++      line:append(reviewed.GLYPH, get_hl(reviewed.HL))
++    else
++      line:append(is_expanded and " " or " ", get_hl("NonText"))
++    end
+ 
+     -- File count (padded to align) - skip in single file mode (when file_path is set)
+     if not data.file_path then
+@@ -344,6 +352,7 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
+     -- File node format (diffview style):
+     -- [tree char] [status] [icon] [path/]filename
+     local is_selected = data.commit_hash == selected_commit and data.path == selected_file
++    local is_reviewed = reviewed.is_marked(reviewed_files, data.commit_hash, data.path)
+ 
+     local selected_bg = nil
+     if is_selected then
+@@ -377,6 +386,9 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
+     end
+     line:append(indent_str, get_hl("Comment"))
+ 
++    local marker_text, marker_hl = reviewed.segment(is_reviewed)
++    line:append(marker_text, get_hl(marker_hl))
++
+     -- Status symbol
+     line:append(data.status_symbol .. " ", get_hl(data.status_color))
+ 
+@@ -390,16 +402,16 @@ function M.prepare_node(node, max_width, selected_commit, selected_file, is_sing
+     if #indent_state > 1 then
+       -- Tree mode: just filename
+       filename = data.path:match("([^/]+)$") or data.path
+-      line:append(filename, get_hl("Normal"))
++      line:append(filename, get_hl(is_reviewed and reviewed.HL or "Normal"))
+     else
+       -- List mode: show full path with directory dimmed
+       local full_path = data.path
+       filename = full_path:match("([^/]+)$") or full_path
+       local directory = full_path:sub(1, -(#filename + 2))
+       if #directory > 0 then
+-        line:append(directory .. "/", get_hl("Comment"))
++        line:append(directory .. "/", get_hl(is_reviewed and reviewed.HL or "Comment"))
+       end
+-      line:append(filename, get_hl("Normal"))
++      line:append(filename, get_hl(is_reviewed and reviewed.HL or "Normal"))
+     end
+ 
+     -- Pad with spaces to fill full line width when selected
+diff --git a/lua/codediff/ui/history/render.lua b/lua/codediff/ui/history/render.lua
+index f93f776..06f338e 100644
+--- a/lua/codediff/ui/history/render.lua
++++ b/lua/codediff/ui/history/render.lua
+@@ -6,6 +6,7 @@ local config = require("codediff.config")
+ local nodes_module = require("codediff.ui.history.nodes")
+ local keymaps_module = require("codediff.ui.history.keymaps")
+ local layout = require("codediff.ui.layout")
++local reviewed = require("codediff.ui.reviewed")
+ 
+ function M.build_tree_nodes(commits, git_root, opts)
+   opts = opts or {}
+@@ -119,12 +120,15 @@ function M.create(data, tabpage, width)
+   })
+   split:mount()
+   pcall(vim.api.nvim_buf_set_name, split.bufnr, "CodeDiff History [" .. tabpage .. "]")
++  -- Rows the user has marked reviewed, keyed by `commit:path` (see ui/reviewed).
++  local reviewed_files = {}
+   local history = {
+     data = data,
+     tabpage = tabpage,
+     split = split,
+     bufnr = split.bufnr,
+     winid = split.winid,
++    reviewed_files = reviewed_files, -- Session-local `commit:path` set marked reviewed
+     is_hidden = false,
+     is_single_file_mode = opts.file_path and opts.file_path ~= "",
+   }
+@@ -134,7 +138,7 @@ function M.create(data, tabpage, width)
+     prepare_node = function(node)
+       local current_width = split.winid and vim.api.nvim_win_is_valid(split.winid) and vim.api.nvim_win_get_width(split.winid) or text_width
+       local selected = history.data.current_selection or {}
+-      return nodes_module.prepare_node(node, current_width, selected.commit_hash, selected.path, history.is_single_file_mode)
++      return nodes_module.prepare_node(node, current_width, selected.commit_hash, selected.path, history.is_single_file_mode, reviewed_files)
+     end,
+   })
+   history.tree = tree
+@@ -285,42 +289,6 @@ function M.get_all_commits(tree)
+   return commits
+ end
+ 
+-local function navigate(history, direction, commits)
+-  local entries = commits and M.get_all_commits(history.tree) or M.get_all_files(history.tree)
+-  local kind = commits and "commit" or "file"
+-  if #entries == 0 then
+-    vim.notify(commits and "No commits in history" or "No files in history", vim.log.levels.WARN)
+-    return
+-  end
+-  local data = history.data
+-  local index = 0
+-  for i, entry in ipairs(entries) do
+-    if commits and entry.data.hash == data.current_commit or not commits and entry.data.commit_hash == data.current_commit and entry.data.path == data.current_file then
+-      index = i
+-      break
+-    end
+-  end
+-  local selected = data.current_commit and (commits or data.current_file)
+-  if selected and not config.options.diff.cycle_next_file and (direction > 0 and index >= #entries or direction < 0 and index <= 1) then
+-    local message = direction > 0 and string.format("Last %s (%d of %d)", kind, #entries, #entries) or string.format("First %s (1 of %d)", kind, #entries)
+-    vim.api.nvim_echo({ { message, "WarningMsg" } }, false, {})
+-    return
+-  end
+-  if not commits then
+-    vim.api.nvim_echo({}, false, {})
+-  end
+-  local next_index = selected and ((index - 1 + direction) % #entries + 1) or (direction > 0 and 1 or #entries)
+-  local entry = entries[next_index]
+-  if selected and history.winid and vim.api.nvim_win_is_valid(history.winid) then
+-    vim.api.nvim_win_set_cursor(history.winid, { entry.node._line or 1, 0 })
+-  end
+-  local file = entry.data
+-  if commits then
+-    file = { path = entry.data.file_path or data.opts.file_path, commit_hash = entry.data.hash, git_root = data.git_root }
+-  end
+-  history.on_file_select(file)
+-end
+-
+ -- Update cursor position in history panel
+ local function update_cursor(history, node)
+   if history.winid and vim.api.nvim_win_is_valid(history.winid) then
+@@ -355,8 +323,50 @@ local function find_current_position(history)
+   return nil, nil, commits
+ end
+ 
+--- Navigate to next file (auto-expands next commit at boundary)
+-function M.navigate_next(history)
++local function is_reviewed_file(history, file)
++  local data = file.data or {}
++  return reviewed.is_marked(history.reviewed_files, data.commit_hash, data.path)
++end
++
++-- Select the nearest file of `commit_node` not marked reviewed, walking `step`.
++-- Returns false when the commit has no such file, so the caller can move on.
++local function select_unreviewed_in_commit(history, commit_node, step)
++  local files = collect_commit_files(history.tree, commit_node)
++  local from, to = 1, #files
++  if step < 0 then
++    from, to = #files, 1
++  end
++  for i = from, to, step do
++    local file = files[i]
++    if not is_reviewed_file(history, file) then
++      vim.api.nvim_echo({}, false, {})
++      update_cursor(history, file.node)
++      history.on_file_select(file.data)
++      return true
++    end
++  end
++  return false
++end
++
++-- Report a walk that ran out of commits without finding anything to review.
++--
++-- Which files exist in unloaded commits is not known without fetching them, so
++-- this deliberately does not claim that everything has been reviewed.
++local function report_no_more_files(history, commits, step)
++  if next(history.reviewed_files or {}) == nil then
++    -- Nothing is marked, so this is an ordinary boundary.
++    local message = step > 0 and string.format("Last file (%d of %d commits)", #commits, #commits) or string.format("First file (1 of %d commits)", #commits)
++    vim.api.nvim_echo({ { message, "WarningMsg" } }, false, {})
++  elseif config.options.diff.cycle_next_file then
++    vim.notify("No other unreviewed files", vim.log.levels.INFO)
++  else
++    vim.api.nvim_echo({ { (step > 0 and "Last" or "First") .. " unreviewed file", "WarningMsg" } }, false, {})
++  end
++end
++
++-- Walk to the nearest file not marked reviewed, auto-expanding commits at the
++-- boundary. `step` is 1 forwards, -1 back.
++local function navigate_files(history, step)
+   local commit_idx, file_idx, commits = find_current_position(history)
+ 
+   if #commits == 0 then
+@@ -364,124 +374,190 @@ function M.navigate_next(history)
+     return
+   end
+ 
+-  -- No current selection: select first file of first expanded commit
++  -- No current selection: start from the expanded commits already on screen.
+   if not commit_idx then
+-    for _, commit_node in ipairs(commits) do
+-      if commit_node:is_expanded() then
+-        local files = collect_commit_files(history.tree, commit_node)
+-        if #files > 0 then
+-          update_cursor(history, files[1].node)
+-          history.on_file_select(files[1].data)
+-          return
+-        end
++    local from, to = 1, #commits
++    if step < 0 then
++      from, to = #commits, 1
++    end
++    for i = from, to, step do
++      if commits[i]:is_expanded() and select_unreviewed_in_commit(history, commits[i], step) then
++        return
+       end
+     end
+     vim.notify("No files in history", vim.log.levels.WARN)
+     return
+   end
+ 
+-  local current_commit = commits[commit_idx]
+-  local files = collect_commit_files(history.tree, current_commit)
+-
+-  -- Not at boundary: go to next file in same commit
+-  if file_idx < #files then
+-    local next_file = files[file_idx + 1]
+-    update_cursor(history, next_file.node)
+-    history.on_file_select(next_file.data)
+-    return
++  -- Remaining files within the current commit.
++  local files = collect_commit_files(history.tree, commits[commit_idx])
++  for i = file_idx + step, step > 0 and #files or 1, step do
++    local file = files[i]
++    if file and not is_reviewed_file(history, file) then
++      vim.api.nvim_echo({}, false, {})
++      update_cursor(history, file.node)
++      history.on_file_select(file.data)
++      return
++    end
+   end
+ 
+-  -- At boundary: go to next commit
+-  if commit_idx >= #commits and not config.options.diff.cycle_next_file then
+-    vim.api.nvim_echo({ { string.format("Last file (%d of %d commits)", #commits, #commits), "WarningMsg" } }, false, {})
+-    return
++  -- Then across commits, loading each one's files before looking inside it.
++  local cycle = config.options.diff.cycle_next_file
++  local limit
++  if cycle then
++    limit = #commits - 1
++  else
++    limit = step > 0 and #commits - commit_idx or commit_idx - 1
+   end
+ 
+-  local next_commit_idx = commit_idx % #commits + 1
+-  local next_commit = commits[next_commit_idx]
++  local function try_commit(offset)
++    if offset > limit then
++      report_no_more_files(history, commits, step)
++      return
++    end
+ 
+-  local function select_first_file()
+-    local next_files = collect_commit_files(history.tree, next_commit)
+-    if #next_files > 0 then
+-      update_cursor(history, next_files[1].node)
+-      history.on_file_select(next_files[1].data)
++    local index = commit_idx + offset * step
++    if cycle then
++      index = (index - 1) % #commits + 1
+     end
+-  end
++    local commit_node = commits[index]
+ 
+-  if next_commit:is_expanded() then
+-    select_first_file()
+-  else
+-    history.load_commit_files(next_commit, select_first_file)
++    local function select_or_continue()
++      if not select_unreviewed_in_commit(history, commit_node, step) then
++        try_commit(offset + 1)
++      end
++    end
++
++    if commit_node:is_expanded() then
++      select_or_continue()
++    else
++      history.load_commit_files(commit_node, select_or_continue)
++    end
+   end
++
++  try_commit(1)
++end
++
++-- Navigate to next file, skipping files marked reviewed (auto-expands next commit at boundary)
++function M.navigate_next(history)
++  navigate_files(history, 1)
+ end
+ 
+--- Navigate to previous file (auto-expands previous commit at boundary)
++-- Navigate to previous file, skipping files marked reviewed (auto-expands previous commit at boundary)
+ function M.navigate_prev(history)
+-  local commit_idx, file_idx, commits = find_current_position(history)
++  navigate_files(history, -1)
++end
+ 
+-  if #commits == 0 then
+-    vim.notify("No commits in history", vim.log.levels.WARN)
++-- The path a single-file-history commit row shows.
++local function commit_file_path(history, commit)
++  return commit.data.file_path or history.data.opts.file_path
++end
++
++local function is_reviewed_commit(history, commit)
++  return reviewed.is_marked(history.reviewed_files, commit.data.hash, commit_file_path(history, commit))
++end
++
++local function select_commit(history, commit)
++  update_cursor(history, commit.node)
++  history.on_file_select({
++    path = commit_file_path(history, commit),
++    commit_hash = commit.data.hash,
++    git_root = history.data.git_root,
++  })
++end
++
++local function report_no_more_commits(history, commits, step)
++  if next(history.reviewed_files or {}) == nil then
++    local message = step > 0 and string.format("Last commit (%d of %d)", #commits, #commits) or string.format("First commit (1 of %d)", #commits)
++    vim.api.nvim_echo({ { message, "WarningMsg" } }, false, {})
+     return
+   end
+ 
+-  -- No current selection: select last file of last expanded commit
+-  if not commit_idx then
+-    for i = #commits, 1, -1 do
+-      local commit_node = commits[i]
+-      if commit_node:is_expanded() then
+-        local files = collect_commit_files(history.tree, commit_node)
+-        if #files > 0 then
+-          update_cursor(history, files[#files].node)
+-          history.on_file_select(files[#files].data)
+-          return
+-        end
++  for _, commit in ipairs(commits) do
++    if not is_reviewed_commit(history, commit) then
++      if config.options.diff.cycle_next_file then
++        vim.notify("No other unreviewed files", vim.log.levels.INFO)
++      else
++        vim.api.nvim_echo({ { (step > 0 and "Last" or "First") .. " unreviewed commit", "WarningMsg" } }, false, {})
+       end
++      return
+     end
+-    vim.notify("No files in history", vim.log.levels.WARN)
+-    return
+   end
+ 
+-  local current_commit = commits[commit_idx]
+-  local files = collect_commit_files(history.tree, current_commit)
++  vim.notify("All files have been reviewed", vim.log.levels.INFO)
++end
+ 
+-  -- Not at boundary: go to previous file in same commit
+-  if file_idx > 1 then
+-    local prev_file = files[file_idx - 1]
+-    update_cursor(history, prev_file.node)
+-    history.on_file_select(prev_file.data)
++-- Walk to the nearest commit not marked reviewed (single-file history mode).
++local function navigate_commits(history, step)
++  local all_commits = M.get_all_commits(history.tree)
++  if #all_commits == 0 then
++    vim.notify("No commits in history", vim.log.levels.WARN)
+     return
+   end
+ 
+-  -- At boundary: go to previous commit
+-  if commit_idx <= 1 and not config.options.diff.cycle_next_file then
+-    vim.api.nvim_echo({ { string.format("First file (1 of %d commits)", #commits), "WarningMsg" } }, false, {})
+-    return
++  local current_index = 0
++  for i, commit in ipairs(all_commits) do
++    if commit.data.hash == history.data.current_commit then
++      current_index = i
++      break
++    end
+   end
+ 
+-  local prev_commit_idx = (commit_idx - 2) % #commits + 1
+-  local prev_commit = commits[prev_commit_idx]
+-
+-  local function select_last_file()
+-    local prev_files = collect_commit_files(history.tree, prev_commit)
+-    if #prev_files > 0 then
+-      update_cursor(history, prev_files[#prev_files].node)
+-      history.on_file_select(prev_files[#prev_files].data)
++  local order = reviewed.walk_order(#all_commits, current_index, step, config.options.diff.cycle_next_file)
++  for _, index in ipairs(order) do
++    local commit = all_commits[index]
++    if commit and not is_reviewed_commit(history, commit) then
++      vim.api.nvim_echo({}, false, {})
++      select_commit(history, commit)
++      return
+     end
+   end
+ 
+-  if prev_commit:is_expanded() then
+-    select_last_file()
+-  else
+-    history.load_commit_files(prev_commit, select_last_file)
+-  end
++  report_no_more_commits(history, all_commits, step)
+ end
+ 
++-- Navigate to next commit, skipping commits marked reviewed (single-file history mode)
+ function M.navigate_next_commit(history)
+-  navigate(history, 1, true)
++  navigate_commits(history, 1)
+ end
+ 
++-- Navigate to previous commit, skipping commits marked reviewed (single-file history mode)
+ function M.navigate_prev_commit(history)
+-  navigate(history, -1, true)
++  navigate_commits(history, -1)
++end
++
++-- Toggle the reviewed mark on the row under the history cursor, or on the entry
++-- currently shown in the diff panes when the cursor is elsewhere.
++function M.toggle_reviewed(history)
++  if not history or not history.tree then
++    return
++  end
++
++  local commit_hash, file_path
++  if history.bufnr and vim.api.nvim_get_current_buf() == history.bufnr then
++    local node = history.tree:get_node()
++    local data = node and node.data
++    if data and data.type == "file" then
++      commit_hash, file_path = data.commit_hash, data.path
++    elseif data and data.type == "commit" and history.is_single_file_mode then
++      commit_hash, file_path = data.hash, data.file_path or history.data.opts.file_path
++    else
++      vim.notify("Mark reviewed is only available for files", vim.log.levels.WARN)
++      return
++    end
++  else
++    commit_hash, file_path = history.data.current_commit, history.data.current_file
++  end
++
++  -- The renderer holds this exact table, so it must be mutated, never replaced.
++  if not history.reviewed_files then
++    return
++  end
++  if reviewed.toggle(history.reviewed_files, commit_hash, file_path) == nil then
++    vim.notify("No file selected", vim.log.levels.WARN)
++    return
++  end
++  history.tree:render()
+ end
+ 
+ function M.toggle_visibility(history)
+diff --git a/lua/codediff/ui/keymap_help.lua b/lua/codediff/ui/keymap_help.lua
+index c9cbf97..bd3ff3b 100644
+--- a/lua/codediff/ui/keymap_help.lua
++++ b/lua/codediff/ui/keymap_help.lua
+@@ -97,6 +97,7 @@ local function build_sections(keymaps, is_bound, shape)
+         { ekm.hover, "Show full path" },
+         { ekm.refresh, "Refresh explorer" },
+         { ekm.toggle_view_mode, "Toggle list/tree view" },
++        { ekm.toggle_reviewed, "Mark/unmark file as reviewed" },
+         { ekm.stage_all, "Stage all files" },
+         { ekm.unstage_all, "Unstage all files" },
+         { ekm.restore, "Discard changes to file" },
+@@ -123,6 +124,7 @@ local function build_sections(keymaps, is_bound, shape)
+         { MOUSE_SELECT, "Select commit/file (double click)" },
+         { hkm.toggle_view_mode, "Toggle list/tree view" },
+         { hkm.refresh, "Refresh history" },
++        { hkm.toggle_reviewed, "Mark/unmark file as reviewed" },
+         { hkm.fold_open, "Open fold" },
+         { hkm.fold_open_recursive, "Open fold recursively" },
+         { hkm.fold_close, "Close fold" },
+diff --git a/lua/codediff/ui/reviewed.lua b/lua/codediff/ui/reviewed.lua
+new file mode 100644
+index 0000000..26055a8
+--- /dev/null
++++ b/lua/codediff/ui/reviewed.lua
+@@ -0,0 +1,107 @@
++-- Session-local "reviewed" marks for explorer and history rows.
++--
++-- A mark records that the user has looked at one row during the current review
++-- pass, so `]f`/`[f` can skip it. It is deliberately not persisted: the same
++-- file is worth reviewing again in the next diff, and nothing here should
++-- outlive the tab that owns the panel.
++--
++-- Both panels store their marks as a plain set on the panel object, keyed by
++-- the two-part identity below.
++
++local M = {}
++
++-- The mark itself, plus the fixed two-cell slot file rows reserve for it, so
++-- marking a row cannot shift the columns to its right. History commit rows
++-- render the bare glyph in place of their expand chevron instead.
++M.GLYPH = "✓"
++M.MARKER = M.GLYPH .. " "
++M.BLANK = "  "
++M.HL = "CodeDiffExplorerReviewed"
++
++--- Key identifying one reviewable row.
++---
++--- The scope is what makes a path unique within a panel: explorer rows are
++--- scoped by group, because a path can appear under both Staged and Unstaged
++--- and each copy is reviewed separately; history rows are scoped by commit hash.
++--- @param scope string|nil Explorer group, or history commit hash
++--- @param path string|nil
++--- @return string|nil key nil when the row cannot be marked
++function M.key(scope, path)
++  if not scope or not path or scope == "" or path == "" then
++    return nil
++  end
++  return scope .. ":" .. path
++end
++
++--- @param marks table<string, boolean>|nil
++--- @return boolean
++function M.is_marked(marks, scope, path)
++  local key = M.key(scope, path)
++  return key ~= nil and marks ~= nil and marks[key] == true
++end
++
++--- Flip the mark on one row.
++--- @param marks table<string, boolean> Mutated in place
++--- @return boolean|nil marked New state, or nil when the row cannot be marked
++function M.toggle(marks, scope, path)
++  local key = M.key(scope, path)
++  if not key then
++    return nil
++  end
++  if marks[key] then
++    marks[key] = nil
++    return false
++  end
++  marks[key] = true
++  return true
++end
++
++--- The marker cell for a row, ready to hand to a renderer.
++--- @return string text, string hl
++function M.segment(marked)
++  if marked then
++    return M.MARKER, M.HL
++  end
++  return M.BLANK, "Normal"
++end
++
++--- The order to visit a flat list of rows in, looking for the next unreviewed
++--- one. Shared by the explorer's file list and single-file history's commit
++--- list, which walk identically over different rows.
++---
++--- With nothing selected (`current_index` 0) the whole list is fair game,
++--- starting from the end the walk comes in from. Otherwise the walk stops at
++--- the list edge unless `cycle` wraps it, and never revisits its starting row.
++--- @param count integer Number of rows
++--- @param current_index integer Selected row, or 0 for none
++--- @param step integer 1 forwards, -1 back
++--- @param cycle boolean Wrap around at the list edge
++--- @return integer[] indices
++function M.walk_order(count, current_index, step, cycle)
++  local indices = {}
++
++  if current_index == 0 then
++    for offset = 1, count do
++      indices[offset] = step > 0 and offset or count + 1 - offset
++    end
++    return indices
++  end
++
++  local limit
++  if cycle then
++    limit = count - 1
++  else
++    limit = step > 0 and count - current_index or current_index - 1
++  end
++
++  for offset = 1, limit do
++    local index = current_index + offset * step
++    if cycle then
++      index = (index - 1) % count + 1
++    end
++    indices[offset] = index
++  end
++  return indices
++end
++
++return M
+diff --git a/tests/fixtures/keymap_matrix.txt b/tests/fixtures/keymap_matrix.txt
+index 5d7fcb8..d840109 100644
+--- a/tests/fixtures/keymap_matrix.txt
++++ b/tests/fixtures/keymap_matrix.txt
+@@ -134,6 +134,7 @@ panel    n  gu             Toggle Changes visibility
+ panel    n  i              Toggle list/tree view
+ panel    n  q              Close codediff tab
+ panel    n  t              Toggle diff layout
++panel    n  v              Mark/unmark file as reviewed
+ panel    n  zA             Toggle fold recursively
+ panel    n  zC             Close fold recursively
+ panel    n  zM             Close all folds
+@@ -211,6 +212,7 @@ panel    n  gu             Toggle Changes visibility
+ panel    n  i              Toggle list/tree view
+ panel    n  q              Close codediff tab
+ panel    n  t              Toggle diff layout
++panel    n  v              Mark/unmark file as reviewed
+ panel    n  zA             Toggle fold recursively
+ panel    n  zC             Close fold recursively
+ panel    n  zM             Close all folds
+diff --git a/tests/integration/ui/explorer/reviewed_spec.lua b/tests/integration/ui/explorer/reviewed_spec.lua
+new file mode 100644
+index 0000000..da3c1dd
+--- /dev/null
++++ b/tests/integration/ui/explorer/reviewed_spec.lua
+@@ -0,0 +1,115 @@
++-- Marking explorer rows as reviewed, and the navigation that skips them.
++
++local h = require("tests.support")
++h.ensure_plugin_loaded()
++
++local reviewed = require("codediff.ui.reviewed")
++
++describe("reviewed marks", function()
++  describe("in a live explorer", function()
++    local repo
++
++    before_each(function()
++      require("codediff").setup({})
++      repo = h.create_temp_git_repo()
++      repo.write_file("a.txt", { "aaa" })
++      repo.write_file("b.txt", { "bbb" })
++      repo.write_file("c.txt", { "ccc" })
++      repo.git("add .")
++      repo.git("commit -m initial")
++      repo.write_file("a.txt", { "aaa modified" })
++      repo.write_file("b.txt", { "bbb modified" })
++      repo.write_file("c.txt", { "ccc modified" })
++      vim.cmd("edit " .. vim.fn.fnameescape(repo.path("a.txt")))
++    end)
++
++    after_each(function()
++      h.close_extra_tabs()
++      if repo then
++        repo.cleanup()
++      end
++    end)
++
++    local function open_explorer()
++      vim.cmd("CodeDiff")
++      assert.is_true(h.wait_for_explorer(5000))
++      assert.is_true(h.wait_for_diff_ready(5000))
++      local session = require("codediff.ui.lifecycle").get_session(vim.api.nvim_get_current_tabpage())
++      assert.is_not_nil(session, "explorer session should exist")
++      return session.panel.view
++    end
++
++    it("renders a marker on the reviewed row only", function()
++      local explorer = open_explorer()
++      local explorer_module = require("codediff.ui.explorer")
++
++      local _, explorer_buf = h.find_window_by_filetype("codediff-explorer")
++      assert.is_false(
++        h.get_buffer_content(explorer_buf):find(reviewed.GLYPH, 1, true) ~= nil,
++        "no row should carry a marker before anything is reviewed"
++      )
++
++      local marked = explorer.data.current_file_path
++      assert.is_not_nil(marked, "a file should be selected after opening")
++      explorer_module.toggle_reviewed(explorer)
++
++      local lines = h.get_buffer_lines(explorer_buf)
++      local marked_rows = {}
++      for _, line in ipairs(lines) do
++        if line:find(reviewed.GLYPH, 1, true) then
++          marked_rows[#marked_rows + 1] = line
++        end
++      end
++      assert.equals(1, #marked_rows, "exactly one row should carry the marker")
++      assert.is_true(
++        marked_rows[1]:find(vim.fn.fnamemodify(marked, ":t"), 1, true) ~= nil,
++        "the marker should sit on the reviewed file's row, got: " .. marked_rows[1]
++      )
++    end)
++
++    it("mutates the set the renderer holds rather than replacing it", function()
++      local explorer = open_explorer()
++      local marks = explorer.reviewed_files
++      assert.is_not_nil(marks, "the explorer should carry a mark set")
++
++      require("codediff.ui.explorer").toggle_reviewed(explorer)
++
++      assert.is_true(rawequal(marks, explorer.reviewed_files), "the mark set must not be swapped for a new table")
++      assert.is_not_nil(next(marks), "the mark should land in that same table")
++    end)
++
++    it("skips reviewed files when navigating to the next file", function()
++      local explorer = open_explorer()
++      local navigation = require("codediff.ui.view.navigation")
++      local tree_module = require("codediff.ui.explorer.tree")
++
++      local all_files = tree_module.get_all_files(explorer.tree)
++      assert.equals(3, #all_files, "fixture should produce three changed files")
++
++      -- Mark the file that ]f would otherwise land on next.
++      local start_path = explorer.data.current_file_path
++      local start_group = explorer.data.current_file_group
++      local start_index
++      for i, file in ipairs(all_files) do
++        if file.data.path == start_path and file.data.group == start_group then
++          start_index = i
++          break
++        end
++      end
++      assert.is_not_nil(start_index, "the selected file should appear in the file list")
++      assert.is_true(start_index + 2 <= #all_files, "fixture should leave two files ahead of the selection")
++
++      local skipped = all_files[start_index + 1].data
++      reviewed.toggle(explorer.reviewed_files, skipped.group, skipped.path)
++
++      navigation.next_file()
++      assert.is_true(h.wait_for_diff_ready(5000))
++
++      assert.equals(
++        all_files[start_index + 2].data.path,
++        explorer.data.current_file_path,
++        "navigation should land past the reviewed file"
++      )
++    end)
++  end)
++end)
+diff --git a/tests/integration/ui/history/reviewed_spec.lua b/tests/integration/ui/history/reviewed_spec.lua
+new file mode 100644
+index 0000000..b4f65bb
+--- /dev/null
++++ b/tests/integration/ui/history/reviewed_spec.lua
+@@ -0,0 +1,130 @@
++-- Marking history rows as reviewed, and the commit navigation that skips them.
++--
++-- Single-file history marks commits rather than files, since each commit is
++-- one thing to review; these specs pin that down.
++
++local h = require("tests.support")
++h.ensure_plugin_loaded()
++
++local reviewed = require("codediff.ui.reviewed")
++
++describe("history reviewed marks", function()
++  local repo
++
++  before_each(function()
++    require("codediff").setup({})
++    repo = h.create_temp_git_repo()
++    repo.write_file("file.txt", { "version 1" })
++    repo.git("add .")
++    repo.git("commit -m first")
++    repo.write_file("file.txt", { "version 2" })
++    repo.git("add .")
++    repo.git("commit -m second")
++    repo.write_file("file.txt", { "version 3" })
++    repo.git("add .")
++    repo.git("commit -m third")
++    repo.write_file("file.txt", { "version 4" })
++    repo.git("add .")
++    repo.git("commit -m fourth")
++    vim.cmd("edit " .. repo.path("file.txt"))
++  end)
++
++  after_each(function()
++    h.close_extra_tabs()
++    if repo then
++      repo.cleanup()
++    end
++  end)
++
++  local function open_history()
++    vim.cmd("CodeDiff history %")
++    local appeared = vim.wait(5000, function()
++      return h.find_window_by_filetype("codediff-history") ~= nil
++    end, 50)
++    assert.is_true(appeared, "history panel should appear within 5s")
++
++    local session = require("codediff.ui.lifecycle").get_session(vim.api.nvim_get_current_tabpage())
++    assert.is_not_nil(session, "history session should exist")
++    local history = session.panel.view
++    assert.is_not_nil(history, "history panel object should be attached to the session")
++    assert.is_true(history.is_single_file_mode, "`CodeDiff history %` should open single-file history")
++    return history
++  end
++
++  it("carries a mark set the renderer holds", function()
++    local history = open_history()
++    assert.is_not_nil(history.reviewed_files, "the history panel should carry a mark set")
++    assert.is_nil(next(history.reviewed_files), "nothing should be marked on open")
++  end)
++
++  it("marks the commit under the cursor and renders a marker", function()
++    local history = open_history()
++    local render = require("codediff.ui.history.render")
++
++    local commits = render.get_all_commits(history.tree)
++    assert.is_true(#commits >= 4, "fixture should produce at least four commits")
++
++    local target = commits[2]
++    local file_path = target.data.file_path or history.data.opts.file_path
++    reviewed.toggle(history.reviewed_files, target.data.hash, file_path)
++    history.tree:render()
++
++    local _, history_buf = h.find_window_by_filetype("codediff-history")
++    local marked_rows = {}
++    for _, line in ipairs(h.get_buffer_lines(history_buf)) do
++      if line:find(reviewed.GLYPH, 1, true) then
++        marked_rows[#marked_rows + 1] = line
++      end
++    end
++    assert.equals(1, #marked_rows, "exactly one commit row should carry the marker")
++    assert.is_true(
++      marked_rows[1]:find(target.data.hash:sub(1, 8), 1, true) ~= nil,
++      "the marker should sit on the marked commit's row, got: " .. marked_rows[1]
++    )
++  end)
++
++  it("skips marked commits when navigating to the next commit", function()
++    local history = open_history()
++    local render = require("codediff.ui.history.render")
++
++    local commits = render.get_all_commits(history.tree)
++
++    -- Take wherever the panel settled as the starting point, then mark the
++    -- commit ]f would otherwise land on next.
++    local start_index = 0
++    for i, commit in ipairs(commits) do
++      if commit.data.hash == history.data.current_commit then
++        start_index = i
++        break
++      end
++    end
++    assert.is_true(start_index + 2 <= #commits, "fixture should leave two commits ahead of the selection")
++
++    local skipped = commits[start_index + 1]
++    reviewed.toggle(history.reviewed_files, skipped.data.hash, skipped.data.file_path or history.data.opts.file_path)
++
++    render.navigate_next_commit(history)
++
++    assert.equals(
++      commits[start_index + 2].data.hash,
++      history.data.current_commit,
++      "navigation should land past the marked commit"
++    )
++  end)
++
++  it("stays put once every commit is marked", function()
++    local history = open_history()
++    local render = require("codediff.ui.history.render")
++
++    render.navigate_next_commit(history)
++    local settled_on = history.data.current_commit
++    assert.is_not_nil(settled_on)
++
++    for _, commit in ipairs(render.get_all_commits(history.tree)) do
++      reviewed.toggle(history.reviewed_files, commit.data.hash, commit.data.file_path or history.data.opts.file_path)
++    end
++
++    render.navigate_next_commit(history)
++    assert.equals(settled_on, history.data.current_commit, "nothing unreviewed is left, so the selection must not move")
++  end)
++end)
+diff --git a/tests/unit/ui/reviewed_spec.lua b/tests/unit/ui/reviewed_spec.lua
+new file mode 100644
+index 0000000..ba90611
+--- /dev/null
++++ b/tests/unit/ui/reviewed_spec.lua
+@@ -0,0 +1,122 @@
++-- Reviewed-mark bookkeeping and the walk order both panels share.
++
++local reviewed = require("codediff.ui.reviewed")
++
++describe("reviewed marks", function()
++  it("keys a row by scope and path, and refuses incomplete rows", function()
++    assert.equals("unstaged:src/a.txt", reviewed.key("unstaged", "src/a.txt"))
++    -- The same path under two groups is two independently reviewable rows.
++    assert.equals("staged:src/a.txt", reviewed.key("staged", "src/a.txt"))
++    assert.is_nil(reviewed.key(nil, "src/a.txt"))
++    assert.is_nil(reviewed.key("unstaged", nil))
++    assert.is_nil(reviewed.key("", "src/a.txt"))
++    assert.is_nil(reviewed.key("unstaged", ""))
++  end)
++
++  it("toggles a mark on and back off in place", function()
++    local marks = {}
++
++    assert.is_true(reviewed.toggle(marks, "unstaged", "a.txt"))
++    assert.is_true(reviewed.is_marked(marks, "unstaged", "a.txt"))
++    -- A path marked in one group is untouched in another.
++    assert.is_false(reviewed.is_marked(marks, "staged", "a.txt"))
++
++    assert.is_false(reviewed.toggle(marks, "unstaged", "a.txt"))
++    assert.is_false(reviewed.is_marked(marks, "unstaged", "a.txt"))
++    -- Unmarking clears the key rather than storing false, so `next()` can be
++    -- used to ask whether any marks exist at all.
++    assert.is_nil(next(marks))
++  end)
++
++  it("reports unmarkable rows without touching the set", function()
++    local marks = {}
++    assert.is_nil(reviewed.toggle(marks, nil, "a.txt"))
++    assert.is_nil(next(marks))
++    assert.is_false(reviewed.is_marked(nil, "unstaged", "a.txt"))
++  end)
++end)
++
++describe("reviewed walk order", function()
++  -- The shared walk both panels use to decide which row to visit next.
++  local cases = {
++    {
++      name = "forwards from the middle, no wrap",
++      count = 4,
++      current = 2,
++      step = 1,
++      cycle = false,
++      want = { 3, 4 },
++    },
++    {
++      name = "backwards from the middle, no wrap",
++      count = 4,
++      current = 3,
++      step = -1,
++      cycle = false,
++      want = { 2, 1 },
++    },
++    {
++      name = "forwards at the last row, no wrap, yields nothing",
++      count = 3,
++      current = 3,
++      step = 1,
++      cycle = false,
++      want = {},
++    },
++    {
++      name = "backwards at the first row, no wrap, yields nothing",
++      count = 3,
++      current = 1,
++      step = -1,
++      cycle = false,
++      want = {},
++    },
++    {
++      name = "forwards with wrap visits every other row once",
++      count = 4,
++      current = 3,
++      step = 1,
++      cycle = true,
++      want = { 4, 1, 2 },
++    },
++    {
++      name = "backwards with wrap visits every other row once",
++      count = 4,
++      current = 2,
++      step = -1,
++      cycle = true,
++      want = { 1, 4, 3 },
++    },
++    {
++      name = "no selection walks the whole list forwards",
++      count = 3,
++      current = 0,
++      step = 1,
++      cycle = false,
++      want = { 1, 2, 3 },
++    },
++    {
++      name = "no selection walks the whole list backwards",
++      count = 3,
++      current = 0,
++      step = -1,
++      cycle = false,
++      want = { 3, 2, 1 },
++    },
++    {
++      name = "a single row never revisits itself",
++      count = 1,
++      current = 1,
++      step = 1,
++      cycle = true,
++      want = {},
++    },
++  }
++
++  for _, case in ipairs(cases) do
++    it(case.name, function()
++      local got = reviewed.walk_order(case.count, case.current, case.step, case.cycle)
++      assert.same(case.want, got)
++    end)
++  end
++end)
+-- 
+2.55.0
+
